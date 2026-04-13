@@ -20,9 +20,9 @@ Include as much of the following as possible:
 
 ## Response Process
 
-- We will acknowledge reports as quickly as possible.
-- We will investigate, validate, and determine remediation steps.
-- We will coordinate disclosure and release timing after a fix is available.
+- I will acknowledge reports as quickly as possible.
+- I will investigate, validate, and determine remediation steps.
+- I will coordinate disclosure and release timing after a fix is available.
 
 ## Scope
 
