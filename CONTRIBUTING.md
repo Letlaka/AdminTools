@@ -20,10 +20,10 @@ Thanks for contributing to AdminTools.
 
 When changing `Scan-ADComputers.ps1`, update relevant docs:
 
-- `/home/runner/work/AdminTools/AdminTools/docs/parameters.md` for parameter changes
-- `/home/runner/work/AdminTools/AdminTools/docs/outputs.md` for output/report changes
-- `/home/runner/work/AdminTools/AdminTools/docs/usage.md` and `/home/runner/work/AdminTools/AdminTools/docs/examples.md` for usage changes
-- `/home/runner/work/AdminTools/AdminTools/CHANGELOG.md` for notable user-facing changes
+- `docs/parameters.md` for parameter changes
+- `docs/outputs.md` for output/report changes
+- `docs/usage.md` and `docs/examples.md` for usage changes
+- `CHANGELOG.md` for notable user-facing changes
 
 ## Commit Guidance
 
