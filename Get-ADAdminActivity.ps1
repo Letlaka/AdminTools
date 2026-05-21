@@ -34,6 +34,9 @@
 
 .PARAMETER DisableCsvSanitization
     Export raw string values without Excel formula injection protection.
+
+.PARAMETER Credential
+    Credential used for AD discovery, privileged group lookups, and remote Security log reads.
 #>
 
 [CmdletBinding()]
@@ -42,6 +45,8 @@ param(
     [int]$DaysBack = 7,
 
     [string[]]$DomainControllers,
+
+    [PSCredential]$Credential,
 
     [switch]$AdminOnly,
 
@@ -252,8 +257,14 @@ function Import-ActiveDirectoryModule {
 function Get-DomainControllerNames {
     param(
         [string[]]$ProvidedDomainControllers,
-        [switch]$AllowUnverified
+        [switch]$AllowUnverified,
+        [PSCredential]$Credential
     )
+
+    $AdCommandParameters = @{}
+    if ($Credential) {
+        $AdCommandParameters["Credential"] = $Credential
+    }
 
     if ($ProvidedDomainControllers -and $ProvidedDomainControllers.Count -gt 0) {
         if ($AllowUnverified) {
@@ -265,7 +276,7 @@ function Get-DomainControllerNames {
             throw "DomainControllers were provided but could not be verified because the trusted ActiveDirectory module is unavailable. Re-run with -AllowUnverifiedDomainController only if these names are trusted."
         }
 
-        $DiscoveredDomainControllers = @(Get-ADDomainController -Filter * |
+        $DiscoveredDomainControllers = @(Get-ADDomainController -Filter * @AdCommandParameters |
                 Where-Object { -not $_.IsReadOnly } |
                 Select-Object -ExpandProperty HostName)
 
@@ -290,7 +301,7 @@ function Get-DomainControllerNames {
         throw "No Domain Controllers were provided and the ActiveDirectory module is unavailable."
     }
 
-    return Get-ADDomainController -Filter * |
+    return Get-ADDomainController -Filter * @AdCommandParameters |
         Where-Object { -not $_.IsReadOnly } |
         Select-Object -ExpandProperty HostName
 }
@@ -298,8 +309,14 @@ function Get-DomainControllerNames {
 function Get-CurrentPrivilegedAdminNames {
     param(
         [string[]]$GroupNames,
-        [string[]]$AdditionalAdminNames
+        [string[]]$AdditionalAdminNames,
+        [PSCredential]$Credential
     )
+
+    $AdCommandParameters = @{}
+    if ($Credential) {
+        $AdCommandParameters["Credential"] = $Credential
+    }
 
     $AdminNameSet = [System.Collections.Generic.HashSet[string]]::new(
         [System.StringComparer]::OrdinalIgnoreCase
@@ -321,9 +338,9 @@ function Get-CurrentPrivilegedAdminNames {
 
     foreach ($GroupName in $GroupNames) {
         try {
-            $Group = Get-ADGroup -Identity $GroupName -ErrorAction Stop
+            $Group = Get-ADGroup -Identity $GroupName @AdCommandParameters -ErrorAction Stop
 
-            Get-ADGroupMember -Identity $Group.DistinguishedName -Recursive -ErrorAction Stop |
+            Get-ADGroupMember -Identity $Group.DistinguishedName -Recursive @AdCommandParameters -ErrorAction Stop |
                 Where-Object { $_.ObjectClass -eq "user" } |
                 ForEach-Object {
                     if (-not [string]::IsNullOrWhiteSpace($_.SamAccountName)) {
@@ -500,6 +517,124 @@ function ConvertTo-SafeCsvRecord {
     }
 }
 
+function Split-CredentialUserName {
+    param(
+        [PSCredential]$Credential
+    )
+
+    $UserName = $Credential.UserName
+
+    if ($UserName -match '\\') {
+        $Parts = $UserName.Split('\', 2)
+        return [pscustomobject]@{
+            Domain = $Parts[0]
+            User   = $Parts[1]
+        }
+    }
+
+    return [pscustomobject]@{
+        Domain = $null
+        User   = $UserName
+    }
+}
+
+function New-SecurityEventXPathQuery {
+    param(
+        [int[]]$Ids,
+        [string]$ProviderName,
+        [datetime]$StartDate
+    )
+
+    $EventIdFilter = (($Ids | ForEach-Object { "EventID=$_" }) -join " or ")
+    $StartUtc = $StartDate.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", [System.Globalization.CultureInfo]::InvariantCulture)
+
+    return "*[System[Provider[@Name='$ProviderName'] and ($EventIdFilter) and TimeCreated[@SystemTime >= '$StartUtc']]]"
+}
+
+function Get-SecurityAuditEvents {
+    param(
+        [string]$ComputerName,
+        [int[]]$Ids,
+        [string]$ProviderName,
+        [datetime]$StartDate,
+        [int]$MaxEvents,
+        [PSCredential]$Credential
+    )
+
+    if (-not $Credential) {
+        $GetWinEventParameters = @{
+            ComputerName   = $ComputerName
+            FilterHashtable = @{
+                LogName      = "Security"
+                ProviderName = $ProviderName
+                Id           = $Ids
+                StartTime    = $StartDate
+            }
+            ErrorAction    = "Stop"
+        }
+
+        if ($MaxEvents -gt 0) {
+            $GetWinEventParameters["MaxEvents"] = $MaxEvents
+        }
+
+        return @(Get-WinEvent @GetWinEventParameters)
+    }
+
+    $CredentialName = Split-CredentialUserName -Credential $Credential
+    $Session = $null
+    $Reader = $null
+
+    try {
+        $Session = [System.Diagnostics.Eventing.Reader.EventLogSession]::new(
+            $ComputerName,
+            $CredentialName.Domain,
+            $CredentialName.User,
+            $Credential.Password,
+            [System.Diagnostics.Eventing.Reader.SessionAuthentication]::Default
+        )
+
+        $XPathQuery = New-SecurityEventXPathQuery `
+            -Ids $Ids `
+            -ProviderName $ProviderName `
+            -StartDate $StartDate
+
+        $Query = [System.Diagnostics.Eventing.Reader.EventLogQuery]::new(
+            "Security",
+            [System.Diagnostics.Eventing.Reader.PathType]::LogName,
+            $XPathQuery
+        )
+        $Query.Session = $Session
+        $Query.ReverseDirection = $true
+
+        $Reader = [System.Diagnostics.Eventing.Reader.EventLogReader]::new($Query)
+        $Events = New-Object System.Collections.Generic.List[object]
+
+        while ($true) {
+            $Event = $Reader.ReadEvent()
+            if ($null -eq $Event) {
+                break
+            }
+
+            [void]$Events.Add($Event)
+
+            if ($MaxEvents -gt 0 -and $Events.Count -ge $MaxEvents) {
+                break
+            }
+        }
+
+        return @($Events.ToArray())
+    }
+    finally {
+        if ($null -ne $Reader) {
+            $Reader.Dispose()
+        }
+
+        if ($null -ne $Session) {
+            $Session.Dispose()
+        }
+    }
+}
+
 function ConvertTo-AdActivityRecord {
     param(
         [System.Diagnostics.Eventing.Reader.EventRecord]$EventRecord,
@@ -577,7 +712,8 @@ function ConvertTo-AdActivityRecord {
 
 $ResolvedDomainControllers = Get-DomainControllerNames `
     -ProvidedDomainControllers $DomainControllers `
-    -AllowUnverified:$AllowUnverifiedDomainController
+    -AllowUnverified:$AllowUnverifiedDomainController `
+    -Credential $Credential
 
 $CurrentAdminNames = [System.Collections.Generic.HashSet[string]]::new(
     [System.StringComparer]::OrdinalIgnoreCase
@@ -586,7 +722,8 @@ $CurrentAdminNames = [System.Collections.Generic.HashSet[string]]::new(
 if ($AdminOnly) {
     $CurrentAdminNames = Get-CurrentPrivilegedAdminNames `
         -GroupNames $PrivilegedGroupNames `
-        -AdditionalAdminNames $AdminSamAccountNames
+        -AdditionalAdminNames $AdminSamAccountNames `
+        -Credential $Credential
 
     if ($CurrentAdminNames.Count -eq 0) {
         throw "AdminOnly was selected, but no admin accounts could be resolved. Provide -AdminSamAccountNames or verify AD module access."
@@ -599,23 +736,16 @@ $FailedDomainControllers = New-Object System.Collections.Generic.List[object]
 $AllRecords = foreach ($DomainController in $ResolvedDomainControllers) {
     Write-Verbose "Reading Security log from $DomainController from $StartTime"
 
-    $GetWinEventParameters = @{
-        ComputerName   = $DomainController
-        FilterHashtable = @{
-            LogName      = "Security"
-            ProviderName = $SecurityAuditProviderName
-            Id           = $EventIds
-            StartTime    = $StartTime
-        }
-        ErrorAction    = "Stop"
-    }
-
-    if ($MaxEventsPerDomainController -gt 0) {
-        $GetWinEventParameters["MaxEvents"] = $MaxEventsPerDomainController
-    }
-
     try {
-        $DomainControllerRecords = @(Get-WinEvent @GetWinEventParameters | ForEach-Object {
+        $SecurityEvents = Get-SecurityAuditEvents `
+            -ComputerName $DomainController `
+            -Ids $EventIds `
+            -ProviderName $SecurityAuditProviderName `
+            -StartDate $StartTime `
+            -MaxEvents $MaxEventsPerDomainController `
+            -Credential $Credential
+
+        $DomainControllerRecords = @($SecurityEvents | ForEach-Object {
             $ActivityRecord = ConvertTo-AdActivityRecord `
                 -EventRecord $_ `
                 -DomainController $DomainController `
