@@ -1,11 +1,13 @@
 # Parameters Reference
 
+## Scan-ADComputers.ps1
+
 | Parameter | Type | Description |
 |---|---|---|
 | `ComputerType` | `Server` or `Workstation` | Selects the AD computer category |
 | `Mode` | `Full` or `Targeted` | Full scan or list-driven scan |
-| `DomainController` | `string` | Domain controller or LDAP server to query |
-| `DomainName` | `string` | Domain suffix used when building FQDNs |
+| `DomainController` | `string` | Domain controller or LDAP server to query; discovered from AD when omitted |
+| `DomainName` | `string` | Domain suffix used when building FQDNs; discovered from AD when omitted |
 | `Credential` | `PSCredential` | Credential for AD query and optional remote inventory |
 | `ComputerListPath` | `string` | Required in targeted mode |
 | `OutputDirectory` | `string` | Where exports and logs are written |
@@ -28,3 +30,69 @@
 | `SkipPing` | `switch` | Forces `TestMethod` to `None` |
 | `ConfigPath` | `string` | JSON config file path |
 | `LogPath` | `string` | Custom log file path |
+| `NoClobber` | `switch` | Fails if an output or log file already exists |
+| `ForceOverwrite` | `switch` | Overwrites existing output or log files |
+| `AllowNetworkOutputPath` | `switch` | Allows writing reports and logs to UNC paths |
+| `AllowNetworkInputPath` | `switch` | Allows reading config, list, or comparison files from UNC paths |
+| `DisableCsvSanitization` | `switch` | Exports raw CSV strings without spreadsheet formula protection |
+
+## Manage-ADUserAccounts.ps1
+
+| Parameter | Type | Description |
+|---|---|---|
+| `Mode` | `Report`, `UserAudit`, `Reset`, `LockedOut` | Selects the user account operation |
+| `Identity` | `string` | User identity for audit or reset actions |
+| `UserListPath` | `string` | Optional text file of user identities for reporting |
+| `SearchBase` | `string` | Single OU/container scope |
+| `SearchBaseList` | `string[]` | Multiple OU/container scopes |
+| `ExcludeOU` | `string[]` | OUs to exclude from scoped reports |
+| `DomainControllers` | `string[]` | Domain Controllers to query for Security events |
+| `Credential` | `PSCredential` | Credential for AD queries and event reads |
+| `ReportType` | `UserSummary`, `PasswordAge`, `LockedOut`, `AuditEvents`, `PrivilegedUsers`, `DisabledUsers`, `StaleUsers` | One or more reports to generate |
+| `ExportFormat` | `Csv`, `Json`, `Html` | One or more export formats |
+| `DaysBack` | `int` | Event query lookback window |
+| `PasswordAgeWarningDays` | `int` | Password age threshold for warning status |
+| `StaleUserDays` | `int` | Last-logon threshold for stale-user reporting |
+| `MaxEventsPerDomainController` | `int` | Optional event limit per DC; `0` means no explicit limit |
+| `PrivilegedGroupNames` | `string[]` | Groups used for privileged user reporting |
+| `OutputDirectory` | `string` | Where user account reports are written |
+| `OutputPrefix` | `string` | Report filename prefix |
+| `Unlock` | `switch` | Unlocks the selected user in `Reset` mode |
+| `Enable` | `switch` | Enables the selected user in `Reset` mode |
+| `ResetPassword` | `switch` | Resets the selected user's password |
+| `ChangePasswordAtLogon` | `switch` | Requires password change at next logon |
+| `NewPassword` | `securestring` | Password used with `ResetPassword` |
+| `GenerateTemporaryPassword` | `switch` | Generates a temporary password for `ResetPassword` |
+| `ShowGeneratedPassword` | `switch` | Required with `GenerateTemporaryPassword` to explicitly display the generated password once |
+| `IncludeEvents` | `switch` | Adds Security event reports to `UserAudit` or `LockedOut` mode |
+| `IncludeGroupMembership` | `switch` | Includes semicolon-delimited group DNs in summary output |
+| `IncludeDisabled` | `switch` | Includes disabled users in scoped reports |
+| `IncludeMessage` | `switch` | Includes rendered event messages in audit exports |
+| `AllowPartialResults` | `switch` | Allows event reports when some DCs cannot be queried |
+| `AllowUnverifiedDomainController` | `switch` | Uses supplied DC names without AD verification |
+| `NoClobber` | `switch` | Fails if an output file already exists |
+| `ForceOverwrite` | `switch` | Overwrites existing output files |
+| `AllowNetworkOutputPath` | `switch` | Allows writing reports to UNC paths |
+| `AllowNetworkInputPath` | `switch` | Allows reading user list files from UNC paths |
+| `DisableCsvSanitization` | `switch` | Exports raw CSV strings without spreadsheet formula protection |
+
+## Get-ADAdminActivity.ps1
+
+| Parameter | Type | Description |
+|---|---|---|
+| `DaysBack` | `int` | Security event query lookback window |
+| `DomainControllers` | `string[]` | Domain Controllers to query for Security events |
+| `Credential` | `PSCredential` | Credential for AD discovery, group lookups, and Security log reads |
+| `AdminOnly` | `switch` | Includes only events performed by current privileged admins or supplied admin names |
+| `AdminSamAccountNames` | `string[]` | Extra admin account names for `AdminOnly` matching |
+| `PrivilegedGroupNames` | `string[]` | Groups used to resolve current privileged admins |
+| `OutputCsv` | `string` | CSV report path |
+| `IncludeMessage` | `switch` | Includes rendered event messages in the export |
+| `MaxAttributeValueLength` | `int` | Maximum exported event attribute value length |
+| `MaxEventsPerDomainController` | `int` | Optional event limit per DC; `0` means no explicit limit |
+| `AllowPartialResults` | `switch` | Allows export when some DCs cannot be queried |
+| `NoClobber` | `switch` | Fails if the output CSV already exists |
+| `ForceOverwrite` | `switch` | Overwrites an existing output CSV |
+| `AllowNetworkOutputPath` | `switch` | Allows writing the CSV report to a UNC path |
+| `AllowUnverifiedDomainController` | `switch` | Uses supplied DC names without AD discovery verification |
+| `DisableCsvSanitization` | `switch` | Exports raw CSV strings without spreadsheet formula protection |

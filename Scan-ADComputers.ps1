@@ -77,6 +77,22 @@
 .PARAMETER LogPath
     Optional path to the run log file.
 
+.PARAMETER NoClobber
+    Fail if an output or log file already exists instead of overwriting it.
+
+.PARAMETER ForceOverwrite
+    Overwrite existing output or log files. Existing files are not overwritten by default.
+
+.PARAMETER AllowNetworkOutputPath
+    Allow writing reports and logs to UNC paths. Network output paths are rejected by default.
+
+.PARAMETER AllowNetworkInputPath
+    Allow reading configuration, target list, or comparison files from UNC paths.
+    Network input paths are rejected by default.
+
+.PARAMETER DisableCsvSanitization
+    Export raw string values without Excel formula injection protection.
+
 .EXAMPLE
     .\Scan-ADComputers.ps1 -ComputerType Server -Mode Full
 
@@ -102,10 +118,10 @@ param(
     [string]$Mode = "Full",
 
     [Parameter(Mandatory = $false)]
-    [string]$DomainController = "dc01.example.corp.local",
+    [string]$DomainController,
 
     [Parameter(Mandatory = $false)]
-    [string]$DomainName = "example.corp.local",
+    [string]$DomainName,
 
     [Parameter(Mandatory = $false)]
     [PSCredential]$Credential,
@@ -178,7 +194,22 @@ param(
     [string]$ConfigPath,
 
     [Parameter(Mandatory = $false)]
-    [string]$LogPath
+    [string]$LogPath,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$NoClobber,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$ForceOverwrite,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$AllowNetworkOutputPath,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$AllowNetworkInputPath,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$DisableCsvSanitization
 )
 
 $ScriptDirectory = if ($PSScriptRoot) {
@@ -209,6 +240,11 @@ foreach ($key in $PSBoundParameters.Keys) {
 
 $script:LogFilePath = $null
 $script:FileLoggingEnabled = $false
+
+if ($ForceOverwrite -and $NoClobber) {
+    Write-Error "ForceOverwrite and NoClobber cannot be used together."
+    exit $ExitCodes.Validation
+}
 
 function Write-Log {
     param(
@@ -290,6 +326,308 @@ function Resolve-OutputPath {
     return (Join-Path $BaseDirectory $Path)
 }
 
+function Test-IsUncPath {
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $false
+    }
+
+    try {
+        $uri = [System.Uri]$Path
+        return $uri.IsUnc
+    }
+    catch {
+        return $Path.StartsWith("\\", [System.StringComparison]::Ordinal)
+    }
+}
+
+function Get-SafeFileNamePart {
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return "domain"
+    }
+
+    return ($Value -replace '[^a-zA-Z0-9._-]', '_')
+}
+
+function Test-IsSafeDnsName {
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$Name
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Name) -or $Name.Length -gt 253) {
+        return $false
+    }
+
+    if ($Name.StartsWith(".") -or $Name.EndsWith(".")) {
+        return $false
+    }
+
+    foreach ($label in $Name.Split(".")) {
+        if ([string]::IsNullOrWhiteSpace($label) -or $label.Length -gt 63) {
+            return $false
+        }
+
+        if ($label -notmatch '^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$') {
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function Test-IsInDnsSuffix {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DnsSuffix
+    )
+
+    return (
+        $Name.Equals($DnsSuffix, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $Name.EndsWith(".$DnsSuffix", [System.StringComparison]::OrdinalIgnoreCase)
+    )
+}
+
+function Assert-SafeDnsName {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Purpose
+    )
+
+    if (-not (Test-IsSafeDnsName -Name $Name)) {
+        Write-ErrorAndExit -Message "$Purpose contains invalid DNS name characters or length: $Name" -CodeKey Validation
+    }
+}
+
+function Test-ContainsControlCharacter {
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [string]$Value
+    )
+
+    return ($null -ne $Value -and $Value -match '[\x00-\x1F\x7F]')
+}
+
+function Assert-SafeTextValues {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Purpose,
+
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [string[]]$Values,
+
+        [int]$MaximumLength = 4096
+    )
+
+    foreach ($Value in @($Values)) {
+        if ([string]::IsNullOrWhiteSpace($Value)) {
+            continue
+        }
+
+        if ($Value.Length -gt $MaximumLength) {
+            Write-ErrorAndExit -Message "$Purpose value exceeds maximum length $MaximumLength." -CodeKey Validation
+        }
+
+        if (Test-ContainsControlCharacter -Value $Value) {
+            Write-ErrorAndExit -Message "$Purpose contains control characters and was rejected." -CodeKey Validation
+        }
+    }
+}
+
+function Assert-AllowedValues {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Purpose,
+
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [string[]]$Values,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$AllowedValues
+    )
+
+    $AllowedSet = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+
+    foreach ($AllowedValue in $AllowedValues) {
+        [void]$AllowedSet.Add($AllowedValue)
+    }
+
+    foreach ($Value in @($Values)) {
+        if ([string]::IsNullOrWhiteSpace($Value) -or $AllowedSet.Contains($Value)) {
+            continue
+        }
+
+        Write-ErrorAndExit -Message "$Purpose contains unsupported value '$Value'. Allowed values: $($AllowedValues -join ', ')." -CodeKey Validation
+    }
+}
+
+function Assert-IntegerRange {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Purpose,
+
+        [Parameter(Mandatory = $true)]
+        [int]$Value,
+
+        [Parameter(Mandatory = $true)]
+        [int]$Minimum,
+
+        [Parameter(Mandatory = $true)]
+        [int]$Maximum
+    )
+
+    if ($Value -lt $Minimum -or $Value -gt $Maximum) {
+        Write-ErrorAndExit -Message "$Purpose must be between $Minimum and $Maximum." -CodeKey Validation
+    }
+}
+
+function Assert-OutputPathAllowed {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Purpose
+    )
+
+    if ((Test-IsUncPath -Path $Path) -and -not $AllowNetworkOutputPath) {
+        Write-ErrorAndExit -Message "Network $Purpose paths are not allowed by default: $Path. Re-run with -AllowNetworkOutputPath only if the location is trusted." -CodeKey Validation
+    }
+
+    if ((Test-Path -LiteralPath $Path) -and ($NoClobber -or -not $ForceOverwrite)) {
+        Write-ErrorAndExit -Message "$Purpose path already exists: $Path. Re-run with -ForceOverwrite only if replacing it is intended." -CodeKey Validation
+    }
+
+    if ((Test-Path -LiteralPath $Path) -and $ForceOverwrite) {
+        Write-Warning "Overwriting existing $Purpose path: $Path"
+    }
+}
+
+function Assert-InputPathAllowed {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Purpose
+    )
+
+    if ((Test-IsUncPath -Path $Path) -and -not $AllowNetworkInputPath) {
+        Write-ErrorAndExit -Message "Network $Purpose paths are not allowed by default: $Path. Re-run with -AllowNetworkInputPath only if the location is trusted." -CodeKey Validation
+    }
+}
+
+function ConvertTo-SafeCsvValue {
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [object]$Value
+    )
+
+    if ($null -eq $Value -or -not ($Value -is [string])) {
+        return $Value
+    }
+
+    if ($Value -match '^[\t\r\n]' -or $Value -match '^\s*[=+\-@]') {
+        return "'$Value"
+    }
+
+    return $Value
+}
+
+function ConvertTo-SafeCsvRecord {
+    param(
+        [Parameter(ValueFromPipeline = $true)]
+        [psobject]$InputObject
+    )
+
+    process {
+        $properties = [ordered]@{}
+
+        foreach ($property in $InputObject.PSObject.Properties) {
+            $properties[$property.Name] = ConvertTo-SafeCsvValue -Value $property.Value
+        }
+
+        [pscustomobject]$properties
+    }
+}
+
+function Test-IsTrustedActiveDirectoryModulePath {
+    param(
+        [string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or [string]::IsNullOrWhiteSpace($env:WINDIR)) {
+        return $false
+    }
+
+    $windowsRoot = (Join-Path -Path $env:WINDIR -ChildPath "System32\WindowsPowerShell\v1.0\Modules\ActiveDirectory").TrimEnd('\')
+    $modulePath = $Path.TrimEnd('\')
+
+    return (
+        $modulePath.Equals($windowsRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $modulePath.StartsWith("$windowsRoot\", [System.StringComparison]::OrdinalIgnoreCase)
+    )
+}
+
+function Import-TrustedActiveDirectoryModule {
+    $loadedModules = @(Get-Module -Name ActiveDirectory -ErrorAction SilentlyContinue)
+    if ($loadedModules.Count -gt 0) {
+        foreach ($loadedModule in $loadedModules) {
+            if (-not (Test-IsTrustedActiveDirectoryModulePath -Path $loadedModule.ModuleBase)) {
+                Write-ErrorAndExit -Message "ActiveDirectory module is already loaded from an untrusted path: $($loadedModule.ModuleBase)" -CodeKey Prereq
+            }
+        }
+
+        return
+    }
+
+    $trustedModule = @(Get-Module -ListAvailable -Name ActiveDirectory -ErrorAction SilentlyContinue |
+            Where-Object { Test-IsTrustedActiveDirectoryModulePath -Path $_.ModuleBase } |
+            Sort-Object -Property Version -Descending |
+            Select-Object -First 1)
+
+    if ($trustedModule.Count -eq 0) {
+        Write-ErrorAndExit -Message '"ActiveDirectory" module not found in the trusted Windows RSAT module path. Install RSAT Active Directory Tools on this machine.' -CodeKey Prereq
+    }
+
+    try {
+        $moduleSpecification = @{
+            ModuleName    = "ActiveDirectory"
+            ModuleVersion = $trustedModule[0].Version
+        }
+
+        if ($trustedModule[0].Guid -and $trustedModule[0].Guid -ne [guid]::Empty) {
+            $moduleSpecification["Guid"] = $trustedModule[0].Guid
+        }
+
+        Import-Module -FullyQualifiedName $moduleSpecification -ErrorAction Stop
+    }
+    catch {
+        Write-ErrorAndExit -Message "ActiveDirectory module could not be loaded from trusted path '$($trustedModule[0].ModuleBase)'. Error: $($_.Exception.Message)" -CodeKey Prereq
+    }
+}
+
 function Set-ParameterFromConfig {
     param(
         [Parameter(Mandatory = $true)]
@@ -321,6 +659,8 @@ function Initialize-LogFile {
         Write-Host "WhatIf: would initialize log file -> $Path"
         return
     }
+
+    Assert-OutputPathAllowed -Path $Path -Purpose "log"
 
     $logDirectory = Split-Path -Parent $Path
     if (-not [string]::IsNullOrWhiteSpace($logDirectory) -and -not (Test-Path -LiteralPath $logDirectory)) {
@@ -475,10 +815,22 @@ function Get-RequestedComputerList {
         $seenInputs[$dedupeKey] = $true
 
         if ($inputName -match '\.') {
+            if (-not (Test-IsSafeDnsName -Name $inputName)) {
+                Write-ErrorAndExit -Message "ComputerListPath contains an invalid DNS name: $inputName" -CodeKey Validation
+            }
+
+            if (-not (Test-IsInDnsSuffix -Name $inputName -DnsSuffix $DefaultDomainName)) {
+                Write-ErrorAndExit -Message "ComputerListPath target '$inputName' is outside the allowed AD DNS suffix '$DefaultDomainName'." -CodeKey Validation
+            }
+
             $shortName = $inputName.Split('.')[0].ToUpperInvariant()
             $fqdn = $inputName
         }
         else {
+            if ($inputName -notmatch '^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$') {
+                Write-ErrorAndExit -Message "ComputerListPath contains an invalid short computer name: $inputName" -CodeKey Validation
+            }
+
             $shortName = $inputName.ToUpperInvariant()
             $fqdn = "$inputName.$DefaultDomainName"
         }
@@ -781,10 +1133,20 @@ function Export-DataSet {
             continue
         }
 
+        Assert-OutputPathAllowed -Path $targetPath -Purpose "output"
+
         switch ($format) {
             "Csv" {
                 if ($rows.Count -gt 0) {
-                    $rows | Export-Csv -LiteralPath $targetPath -NoTypeInformation -Force
+                    $csvRows = if ($DisableCsvSanitization) {
+                        Write-Warning "CSV sanitization is disabled. Opening this report in spreadsheet software may evaluate AD data as formulas."
+                        $rows
+                    }
+                    else {
+                        @($rows | ConvertTo-SafeCsvRecord)
+                    }
+
+                    $csvRows | Export-Csv -LiteralPath $targetPath -NoTypeInformation
                 }
                 else {
                     Set-Content -LiteralPath $targetPath -Value "" -Encoding UTF8
@@ -1340,6 +1702,12 @@ function Invoke-OperationalEnrichment {
                 if ([string]::IsNullOrWhiteSpace($targetName)) {
                     $resultProperties["RemoteInventoryStatus"] = "NoTarget"
                 }
+                elseif ([string]::IsNullOrWhiteSpace([string]$using:DomainName)) {
+                    $resultProperties["RemoteInventoryStatus"] = "SkippedUntrustedTarget: domain name unavailable"
+                }
+                elseif (-not $targetName.EndsWith(".$($using:DomainName)", [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $resultProperties["RemoteInventoryStatus"] = "SkippedUntrustedTarget: target is outside the discovered AD DNS suffix"
+                }
                 elseif ($resultProperties.Contains("ConnectivityReachable") -and $resultProperties["ConnectivityReachable"] -eq $false) {
                     $resultProperties["RemoteInventoryStatus"] = "SkippedUnreachable"
                 }
@@ -1468,6 +1836,8 @@ if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
         Write-ErrorAndExit -Message "Configuration file not found: $ConfigPath" -CodeKey Config
     }
 
+    Assert-InputPathAllowed -Path $ConfigPath -Purpose "configuration file"
+
     try {
         $configObject = Get-Content -LiteralPath $ConfigPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
     }
@@ -1499,11 +1869,31 @@ if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
             "PingCount",
             "TestMethod",
             "SkipPing",
-            "LogPath"
+            "LogPath",
+            "NoClobber",
+            "ForceOverwrite",
+            "AllowNetworkOutputPath",
+            "AllowNetworkInputPath",
+            "DisableCsvSanitization"
         )) {
         Set-ParameterFromConfig -ConfigObject $configObject -ParameterName $configParameterName
     }
 }
+
+if ($ForceOverwrite -and $NoClobber) {
+    Write-ErrorAndExit -Message "ForceOverwrite and NoClobber cannot be used together." -CodeKey Validation
+}
+
+Assert-AllowedValues -Purpose "ComputerType" -Values @($ComputerType) -AllowedValues @("Server", "Workstation")
+Assert-AllowedValues -Purpose "Mode" -Values @($Mode) -AllowedValues @("Full", "Targeted")
+Assert-AllowedValues -Purpose "ExportFormat" -Values @($ExportFormat) -AllowedValues @("Csv", "Json", "Html")
+Assert-AllowedValues -Purpose "TestMethod" -Values @($TestMethod) -AllowedValues @("Ping", "WinRM", "None")
+Assert-IntegerRange -Purpose "TimeoutSeconds" -Value $TimeoutSeconds -Minimum 1 -Maximum 300
+Assert-IntegerRange -Purpose "ThrottleLimit" -Value $ThrottleLimit -Minimum 1 -Maximum 128
+Assert-IntegerRange -Purpose "PingCount" -Value $PingCount -Minimum 1 -Maximum 10
+Assert-SafeTextValues -Purpose "SearchBase" -Values @($SearchBase)
+Assert-SafeTextValues -Purpose "SearchBaseList" -Values $SearchBaseList
+Assert-SafeTextValues -Purpose "ExcludeOU" -Values $ExcludeOU
 
 if ($SkipPing.IsPresent) {
     if ($PSBoundParameters.ContainsKey("TestMethod") -and $TestMethod -ne "None") {
@@ -1519,12 +1909,18 @@ if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
 
 $OutputDirectory = Resolve-OutputPath -Path $OutputDirectory -BaseDirectory $ScriptDirectory
 
+if ((Test-IsUncPath -Path $OutputDirectory) -and -not $AllowNetworkOutputPath) {
+    Write-ErrorAndExit -Message "Network output directories are not allowed by default: $OutputDirectory. Re-run with -AllowNetworkOutputPath only if the location is trusted." -CodeKey Validation
+}
+
 if (-not [string]::IsNullOrWhiteSpace($ComputerListPath)) {
     $ComputerListPath = Resolve-ExistingPath -Path $ComputerListPath -BaseDirectory $ScriptDirectory
+    Assert-InputPathAllowed -Path $ComputerListPath -Purpose "computer list"
 }
 
 if (-not [string]::IsNullOrWhiteSpace($CompareWithPrevious)) {
     $CompareWithPrevious = Resolve-ExistingPath -Path $CompareWithPrevious -BaseDirectory $ScriptDirectory
+    Assert-InputPathAllowed -Path $CompareWithPrevious -Purpose "comparison file"
 }
 
 if ([string]::IsNullOrWhiteSpace($LogPath)) {
@@ -1569,16 +1965,38 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
     Write-ErrorAndExit -Message "PowerShell 7 or greater is required." -CodeKey Prereq
 }
 
-if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
-    Write-ErrorAndExit -Message '"ActiveDirectory" module not found. Install RSAT Active Directory Tools on this machine.' -CodeKey Prereq
-}
-
-Import-Module ActiveDirectory -ErrorAction Stop
+Import-TrustedActiveDirectoryModule
 
 if (-not $Credential) {
     Write-Log -Message "No credential provided; prompting for credentials..." -Level Info
     $Credential = Get-Credential -Message "Enter credentials for AD query and optional remote inventory"
 }
+
+$domainDiscoveryParameters = @{
+    Credential = $Credential
+}
+
+if (-not [string]::IsNullOrWhiteSpace($DomainController)) {
+    $domainDiscoveryParameters["Server"] = $DomainController
+}
+
+try {
+    $adDomain = Get-ADDomain @domainDiscoveryParameters -ErrorAction Stop
+}
+catch {
+    Write-ErrorAndExit -Message "Failed to discover AD domain details: $($_.Exception.Message)" -CodeKey ADQuery
+}
+
+if ([string]::IsNullOrWhiteSpace($DomainName)) {
+    $DomainName = $adDomain.DNSRoot
+}
+
+if ([string]::IsNullOrWhiteSpace($DomainController)) {
+    $DomainController = $adDomain.PDCEmulator
+}
+
+Assert-SafeDnsName -Name $DomainName -Purpose "DomainName"
+Assert-SafeDnsName -Name $DomainController -Purpose "DomainController"
 
 $querySearchBases = @(Get-QuerySearchBases)
 $queryScopeDescription = if ($querySearchBases.Count -gt 0) {
@@ -1614,10 +2032,13 @@ $propertiesToGet = @(
 )
 
 $adQueryParameters = @{
-    Server      = $DomainController
     Credential  = $Credential
     Properties  = $propertiesToGet
     ErrorAction = "Stop"
+}
+
+if (-not [string]::IsNullOrWhiteSpace($DomainController)) {
+    $adQueryParameters["Server"] = $DomainController
 }
 
 Write-Log -Message "Mode: $Mode" -Level Info
@@ -1626,7 +2047,7 @@ Write-Log -Message "Query scope: $queryScopeDescription" -Level Info
 Write-Log -Message "Export formats: $([string]::Join(', ', @($ExportFormat)))" -Level Info
 
 $exportPrefix = Get-ComputerExportPrefix -Type $ComputerType
-$domainClean = $DomainName -replace '\.', '_'
+$domainClean = Get-SafeFileNamePart -Value $DomainName
 $inventoryBasePath = Join-Path $OutputDirectory "${exportPrefix}_${domainClean}_$RunTimestamp"
 $auditBasePath = Join-Path $OutputDirectory "${exportPrefix}_${domainClean}_${RunTimestamp}_TargetedAudit"
 $deltaBasePath = Join-Path $OutputDirectory "${exportPrefix}_${domainClean}_${RunTimestamp}_Delta"

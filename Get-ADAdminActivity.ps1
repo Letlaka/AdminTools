@@ -458,6 +458,86 @@ function Test-IsUncPath {
     }
 }
 
+function Test-IsSafeDnsName {
+    param(
+        [Parameter(Mandatory = $false)]
+        [string]$Name
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Name) -or $Name.Length -gt 253) {
+        return $false
+    }
+
+    if ($Name.StartsWith(".") -or $Name.EndsWith(".")) {
+        return $false
+    }
+
+    foreach ($label in $Name.Split(".")) {
+        if ([string]::IsNullOrWhiteSpace($label) -or $label.Length -gt 63) {
+            return $false
+        }
+
+        if ($label -notmatch '^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$') {
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function Assert-SafeDomainControllerNames {
+    param(
+        [string[]]$Names
+    )
+
+    foreach ($Name in @($Names)) {
+        if ([string]::IsNullOrWhiteSpace($Name)) {
+            continue
+        }
+
+        if (-not (Test-IsSafeDnsName -Name $Name)) {
+            throw "DomainControllers contains an invalid DNS name: $Name"
+        }
+    }
+}
+
+function Test-ContainsControlCharacter {
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [string]$Value
+    )
+
+    return ($null -ne $Value -and $Value -match '[\x00-\x1F\x7F]')
+}
+
+function Assert-SafeTextValues {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Purpose,
+
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [string[]]$Values,
+
+        [int]$MaximumLength = 4096
+    )
+
+    foreach ($Value in @($Values)) {
+        if ([string]::IsNullOrWhiteSpace($Value)) {
+            continue
+        }
+
+        if ($Value.Length -gt $MaximumLength) {
+            throw "$Purpose value exceeds maximum length $MaximumLength."
+        }
+
+        if (Test-ContainsControlCharacter -Value $Value) {
+            throw "$Purpose contains control characters and was rejected."
+        }
+    }
+}
+
 function Test-IsCsvPath {
     param(
         [string]$Path
@@ -709,6 +789,10 @@ function ConvertTo-AdActivityRecord {
         RenderedMessage             = $RenderedMessage
     }
 }
+
+Assert-SafeDomainControllerNames -Names $DomainControllers
+Assert-SafeTextValues -Purpose "AdminSamAccountNames" -Values $AdminSamAccountNames -MaximumLength 256
+Assert-SafeTextValues -Purpose "PrivilegedGroupNames" -Values $PrivilegedGroupNames -MaximumLength 256
 
 $ResolvedDomainControllers = Get-DomainControllerNames `
     -ProvidedDomainControllers $DomainControllers `

@@ -1,6 +1,8 @@
 # Examples
 
-## Basic Full Scan
+## Scan-ADComputers.ps1
+
+### Basic Full Scans
 
 ```powershell
 .\Scan-ADComputers.ps1 -ComputerType Server -Mode Full
@@ -10,25 +12,7 @@
 .\Scan-ADComputers.ps1 -ComputerType Workstation -Mode Full
 ```
 
-## Full Scan with Specific Domain Controller
-
-```powershell
-.\Scan-ADComputers.ps1 `
-  -ComputerType Server `
-  -Mode Full `
-  -DomainController "DomainController.domain.local"
-```
-
-## Full Scan with Custom Output Directory
-
-```powershell
-.\Scan-ADComputers.ps1 `
-  -ComputerType Server `
-  -Mode Full `
-  -OutputDirectory "C:\Temp\ADReports"
-```
-
-## Full Scan with Scope Controls
+### Scope Controls
 
 ```powershell
 .\Scan-ADComputers.ps1 `
@@ -43,36 +27,11 @@
   -Mode Full `
   -SearchBaseList `
     "OU=Production Servers,DC=domain,DC=local", `
-    "OU=Test Servers,DC=domain,DC=local"
+    "OU=Test Servers,DC=domain,DC=local" `
+  -ExcludeOU "OU=Retired Servers,DC=domain,DC=local"
 ```
 
-```powershell
-.\Scan-ADComputers.ps1 `
-  -ComputerType Workstation `
-  -Mode Full `
-  -SearchBase "DC=domain,DC=local" `
-  -ExcludeOU "OU=Disabled Devices,DC=domain,DC=local"
-```
-
-## Include Disabled Objects
-
-```powershell
-.\Scan-ADComputers.ps1 `
-  -ComputerType Server `
-  -Mode Full `
-  -IncludeDisabled
-```
-
-## Stale Device Reporting
-
-```powershell
-.\Scan-ADComputers.ps1 `
-  -ComputerType Workstation `
-  -Mode Full `
-  -InactiveDays 90
-```
-
-## Targeted Scan Basics
+### Targeted Scan
 
 ```powershell
 .\Scan-ADComputers.ps1 `
@@ -81,109 +40,7 @@
   -ComputerListPath ".\serverlist.txt"
 ```
 
-## Targeted Scan Without Connectivity Checks
-
-```powershell
-.\Scan-ADComputers.ps1 `
-  -ComputerType Server `
-  -Mode Targeted `
-  -ComputerListPath ".\serverlist.txt" `
-  -TestMethod None
-```
-
-```powershell
-.\Scan-ADComputers.ps1 `
-  -ComputerType Server `
-  -Mode Targeted `
-  -ComputerListPath ".\serverlist.txt" `
-  -SkipPing
-```
-
-## Targeted Scan with Ping or WinRM
-
-```powershell
-.\Scan-ADComputers.ps1 `
-  -ComputerType Server `
-  -Mode Targeted `
-  -ComputerListPath ".\serverlist.txt" `
-  -TestMethod Ping `
-  -PingCount 2 `
-  -TimeoutSeconds 5 `
-  -ThrottleLimit 10
-```
-
-```powershell
-.\Scan-ADComputers.ps1 `
-  -ComputerType Server `
-  -Mode Targeted `
-  -ComputerListPath ".\serverlist.txt" `
-  -TestMethod WinRM `
-  -TimeoutSeconds 5 `
-  -ThrottleLimit 12
-```
-
-## Targeted Audit and Status Exports
-
-```powershell
-.\Scan-ADComputers.ps1 `
-  -ComputerType Server `
-  -Mode Targeted `
-  -ComputerListPath ".\serverlist.txt" `
-  -SeparateStatusExports
-```
-
-## Multi-Format Export and Summary-Only
-
-```powershell
-.\Scan-ADComputers.ps1 `
-  -ComputerType Server `
-  -Mode Full `
-  -ExportFormat Csv,Json,Html
-```
-
-```powershell
-.\Scan-ADComputers.ps1 `
-  -ComputerType Workstation `
-  -Mode Full `
-  -InactiveDays 90 `
-  -SummaryOnly `
-  -ExportFormat Csv,Html
-```
-
-## Compare with Previous Export
-
-```powershell
-.\Scan-ADComputers.ps1 `
-  -ComputerType Server `
-  -Mode Full `
-  -CompareWithPrevious "C:\Temp\ADReports\Servers_domain_local_20260412090000.csv"
-```
-
-```powershell
-.\Scan-ADComputers.ps1 `
-  -ComputerType Workstation `
-  -Mode Full `
-  -ExportFormat Json `
-  -CompareWithPrevious "C:\Temp\ADReports\Workstations_domain_local_20260412090000.json"
-```
-
-## DNS, Ports, and Remote Inventory
-
-```powershell
-.\Scan-ADComputers.ps1 `
-  -ComputerType Server `
-  -Mode Targeted `
-  -ComputerListPath ".\serverlist.txt" `
-  -ResolveDns
-```
-
-```powershell
-.\Scan-ADComputers.ps1 `
-  -ComputerType Server `
-  -Mode Targeted `
-  -ComputerListPath ".\serverlist.txt" `
-  -TestPorts 445,3389,5985
-```
+### DNS, Ports, and Remote Inventory
 
 ```powershell
 .\Scan-ADComputers.ps1 `
@@ -197,32 +54,199 @@
   -InactiveDays 90
 ```
 
-## Configuration File Usage
+### Summary and Delta Reports
+
+```powershell
+.\Scan-ADComputers.ps1 `
+  -ComputerType Workstation `
+  -Mode Full `
+  -InactiveDays 90 `
+  -SummaryOnly `
+  -ExportFormat Csv,Html
+```
+
+```powershell
+.\Scan-ADComputers.ps1 `
+  -ComputerType Server `
+  -Mode Full `
+  -CompareWithPrevious "C:\Temp\ADReports\Servers_domain_local_20260501090000.csv"
+```
+
+### JSON Config
+
+`Scan-ADComputers.ps1` supports JSON config files.
+
+```json
+{
+  "ComputerType": "Server",
+  "Mode": "Targeted",
+  "ComputerListPath": ".\\serverlist.txt",
+  "OutputDirectory": ".\\Output\\TargetedServers",
+  "ExportFormat": ["Csv", "Json", "Html"],
+  "NoClobber": true,
+  "TestMethod": "WinRM",
+  "PingCount": 2,
+  "ResolveDns": true,
+  "TestPorts": [445, 3389, 5985],
+  "RemoteInventory": true,
+  "InactiveDays": 90,
+  "SeparateStatusExports": true,
+  "TimeoutSeconds": 5,
+  "ThrottleLimit": 12
+}
+```
 
 ```powershell
 .\Scan-ADComputers.ps1 -ConfigPath ".\Scan-ADComputers.json"
 ```
 
+## Get-ADAdminActivity.ps1
+
+### Basic Audit Report
+
 ```powershell
-.\Scan-ADComputers.ps1 `
-  -ConfigPath ".\Scan-ADComputers.json" `
-  -Mode Full `
+.\Get-ADAdminActivity.ps1 `
+  -DaysBack 7 `
+  -OutputCsv "C:\Temp\ADReports\AD_Admin_Activity.csv"
+```
+
+### Privileged Admin Activity
+
+```powershell
+.\Get-ADAdminActivity.ps1 `
+  -DaysBack 30 `
+  -AdminOnly `
+  -AllowPartialResults
+```
+
+### Additional Admin Names
+
+```powershell
+.\Get-ADAdminActivity.ps1 `
+  -DaysBack 30 `
+  -AdminOnly `
+  -AdminSamAccountNames "svc-ad-admin","tier0.operator"
+```
+
+### Specific Domain Controllers
+
+```powershell
+.\Get-ADAdminActivity.ps1 `
+  -DaysBack 14 `
+  -DomainControllers "dc01.domain.local","dc02.domain.local" `
+  -AllowPartialResults
+```
+
+### Include Rendered Event Messages
+
+```powershell
+.\Get-ADAdminActivity.ps1 `
+  -DaysBack 3 `
+  -IncludeMessage `
+  -OutputCsv "C:\Temp\ADReports\AD_Admin_Activity_WithMessages.csv"
+```
+
+### JSON Config
+
+`Get-ADAdminActivity.ps1` does not currently support JSON config files. Use a
+wrapper script for repeatable presets:
+
+```powershell
+$domainControllers = @("dc01.domain.local", "dc02.domain.local")
+
+.\Get-ADAdminActivity.ps1 `
+  -DaysBack 14 `
+  -DomainControllers $domainControllers `
+  -AdminOnly `
+  -AllowPartialResults
+```
+
+## Manage-ADUserAccounts.ps1
+
+### User Account Reports
+
+```powershell
+.\Manage-ADUserAccounts.ps1 `
+  -Mode Report `
+  -ReportType UserSummary,PasswordAge `
+  -PasswordAgeWarningDays 90 `
   -ExportFormat Csv,Html
 ```
 
-## Custom Log File and WhatIf
+```powershell
+.\Manage-ADUserAccounts.ps1 `
+  -Mode Report `
+  -ReportType PrivilegedUsers,DisabledUsers,StaleUsers `
+  -SearchBase "OU=Users,DC=domain,DC=local" `
+  -IncludeDisabled `
+  -ExportFormat Csv
+```
+
+### Locked-Out User Details
 
 ```powershell
-.\Scan-ADComputers.ps1 `
-  -ComputerType Server `
-  -Mode Full `
-  -LogPath "C:\Temp\ADReports\ServerScan.log"
+.\Manage-ADUserAccounts.ps1 `
+  -Mode LockedOut `
+  -IncludeEvents `
+  -DaysBack 7 `
+  -ExportFormat Csv,Html
+```
+
+### Single-User Audit
+
+```powershell
+.\Manage-ADUserAccounts.ps1 `
+  -Mode UserAudit `
+  -Identity jsmith `
+  -IncludeEvents `
+  -DaysBack 30 `
+  -ExportFormat Csv,Json
+```
+
+### User Reset Actions
+
+```powershell
+.\Manage-ADUserAccounts.ps1 `
+  -Mode Reset `
+  -Identity jsmith `
+  -Unlock `
+  -WhatIf
 ```
 
 ```powershell
-.\Scan-ADComputers.ps1 `
-  -ComputerType Server `
-  -Mode Full `
+.\Manage-ADUserAccounts.ps1 `
+  -Mode Reset `
+  -Identity jsmith `
+  -ResetPassword `
+  -GenerateTemporaryPassword `
+  -ShowGeneratedPassword `
+  -ChangePasswordAtLogon
+```
+
+```powershell
+$password = Read-Host "Temporary password" -AsSecureString
+
+.\Manage-ADUserAccounts.ps1 `
+  -Mode Reset `
+  -Identity jsmith `
+  -ResetPassword `
+  -NewPassword $password `
+  -ChangePasswordAtLogon
+```
+
+### JSON Config
+
+`Manage-ADUserAccounts.ps1` does not currently support JSON config files. Use a
+wrapper script for repeatable presets:
+
+```powershell
+$userScopes = @("OU=Users,DC=domain,DC=local", "OU=Admins,DC=domain,DC=local")
+
+.\Manage-ADUserAccounts.ps1 `
+  -Mode Report `
+  -ReportType UserSummary,PasswordAge,PrivilegedUsers `
+  -SearchBaseList $userScopes `
+  -OutputDirectory "C:\Temp\ADReports\UserAccounts" `
   -ExportFormat Csv,Html `
-  -WhatIf
+  -NoClobber
 ```
