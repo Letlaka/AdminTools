@@ -48,8 +48,9 @@ jobs:
           Install-Module Pester -Force -Scope CurrentUser -MinimumVersion 5.0
           $config = New-PesterConfiguration
           $config.Run.Path = "./tests"
+          $config.Run.PassThru = $true
           $config.Output.Verbosity = "Detailed"
-          $result = Invoke-Pester -Configuration $config -PassThru
+          $result = Invoke-Pester -Configuration $config
           if ($result.FailedCount -gt 0) { exit 1 }
 
       - name: Verify manual can be regenerated

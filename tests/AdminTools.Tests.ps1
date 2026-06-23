@@ -49,7 +49,7 @@ Describe "Limit-TextLength" {
 
 Describe "Assert-SafeTextValues" {
     It "Throws when value contains control characters" {
-        { Assert-SafeTextValues -Purpose "Test" -Values @("bad`x00value") } | Should -Throw
+        { Assert-SafeTextValues -Purpose "Test" -Values @("bad`0value") } | Should -Throw
     }
     It "Throws when value exceeds maximum length" {
         { Assert-SafeTextValues -Purpose "Test" -Values @("a" * 5000) -MaximumLength 100 } | Should -Throw
@@ -65,7 +65,7 @@ Describe "ConvertTo-EventDataMap" {
         $FakeRecord | Add-Member -MemberType ScriptMethod -Name "ToXml" -Value { return "<<<not xml>>>" }
         $FakeRecord | Add-Member -MemberType ScriptProperty -Name "RecordId" -Value { 999 }
         $FakeRecord | Add-Member -MemberType ScriptProperty -Name "Id" -Value { 4720 }
-        $Result = ConvertTo-EventDataMap -EventRecord $FakeRecord
+        $Result = ConvertTo-EventDataMap -EventRecord $FakeRecord 3>$null
         $Result | Should -BeOfType [hashtable]
         $Result.Count | Should -Be 0
     }
