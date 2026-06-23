@@ -46,6 +46,11 @@ using module ./AdminToolsCommon.psm1
     Credential used for AD discovery, privileged group lookups, and remote Security log reads.
 #>
 
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+    "PSUseSingularNouns",
+    "",
+    Justification = "Get-DomainControllerNames returns a collection and retains its established internal name."
+)]
 [CmdletBinding()]
 param(
     [ValidateRange(1, 3650)]
@@ -88,6 +93,7 @@ Import-Module (Join-Path $PSScriptRoot "AdminToolsCommon.psm1") -Force -ErrorAct
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$InformationPreference = "Continue"
 
 $ExitCodes = @{
     Success    = 0
@@ -578,7 +584,7 @@ if ($OutputCsv) {
 
     try {
         $CsvRecords | Export-Csv -LiteralPath $ResolvedOutputCsv -NoTypeInformation -Encoding UTF8
-        Write-Host "Report exported to: $ResolvedOutputCsv"
+        Write-Information "Report exported to: $ResolvedOutputCsv"
     }
     catch {
         Write-Error "Failed to export report to '$ResolvedOutputCsv': $($_.Exception.Message)"
@@ -586,7 +592,7 @@ if ($OutputCsv) {
     }
 }
 
-Write-Host ("Summary: queried {0} Domain Controller(s), succeeded {1}, failed {2}, exported {3} event record(s)." -f `
+Write-Information ("Summary: queried {0} Domain Controller(s), succeeded {1}, failed {2}, exported {3} event record(s)." -f `
         @($ResolvedDomainControllers).Count,
         $SuccessfulDomainControllers.Count,
         $FailedDomainControllers.Count,

@@ -5,6 +5,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$InformationPreference = "Continue"
 
 $RepositoryRoot = Split-Path -Parent $PSScriptRoot
 $ManualDirectory = Join-Path -Path $RepositoryRoot -ChildPath $OutputDirectory
@@ -73,6 +74,11 @@ function ConvertTo-XmlText {
 }
 
 function New-WordRun {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        "PSUseShouldProcessForStateChangingFunctions",
+        "",
+        Justification = "This pure helper constructs and returns WordprocessingML text; it does not change system state."
+    )]
     param(
         [string]$Text,
         [switch]$Code
@@ -89,6 +95,11 @@ function New-WordRun {
 }
 
 function New-WordParagraph {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        "PSUseShouldProcessForStateChangingFunctions",
+        "",
+        Justification = "This pure helper constructs and returns WordprocessingML text; it does not change system state."
+    )]
     param(
         [string]$Text,
         [string]$Style,
@@ -329,6 +340,11 @@ $($HtmlBody -join "`n")
 }
 
 function New-ManualMarkdown {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        "PSUseShouldProcessForStateChangingFunctions",
+        "",
+        Justification = "This pure helper constructs and returns Markdown content; file writes occur outside the function."
+    )]
     param(
         [string]$Title,
         [object[]]$Documents,
@@ -592,9 +608,9 @@ elseif (Test-Path -LiteralPath $TemporaryDirectory) {
     Remove-Item -LiteralPath $TemporaryDirectory -Recurse -Force
 }
 
-Write-Host "Created $ManualMarkdown"
-Write-Host "Created $ManualHtml"
-Write-Host "Created $ManualDocx"
+Write-Information "Created $ManualMarkdown"
+Write-Information "Created $ManualHtml"
+Write-Information "Created $ManualDocx"
 
 foreach ($ScriptManual in $ScriptManuals) {
     $ScriptManualMarkdown = Join-Path -Path $ManualDirectory -ChildPath ("{0}.md" -f $ScriptManual.BaseName)
@@ -620,8 +636,8 @@ foreach ($ScriptManual in $ScriptManuals) {
         Write-Warning "Could not create $ScriptManualDocx because LibreOffice Writer conversion was unavailable."
     }
     else {
-        Write-Host "Created $ScriptManualMarkdown"
-        Write-Host "Created $ScriptManualHtml"
-        Write-Host "Created $ScriptManualDocx"
+        Write-Information "Created $ScriptManualMarkdown"
+        Write-Information "Created $ScriptManualHtml"
+        Write-Information "Created $ScriptManualDocx"
     }
 }

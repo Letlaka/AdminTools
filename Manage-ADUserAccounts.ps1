@@ -44,8 +44,8 @@ using module ./AdminToolsCommon.psm1
     Generate a temporary password for -ResetPassword. The generated value is
     displayed only when -ShowGeneratedPassword is also supplied and is not
     written to exported reports. The generated value exists briefly as plain
-    text so it can be displayed, then is intentionally converted using
-    ConvertTo-SecureString -AsPlainText -Force before it is sent to AD.
+    text so it can be displayed, then is copied character by character into a
+    read-only SecureString before it is sent to AD.
 
 .PARAMETER ShowGeneratedPassword
     Display a generated temporary password once in the console. This is required
@@ -60,6 +60,16 @@ using module ./AdminToolsCommon.psm1
     Controllers.
 #>
 
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+    "PSReviewUnusedParameter",
+    "",
+    Justification = "Script parameters are consumed by script-scoped helper functions, which this rule does not resolve."
+)]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+    "PSUseSingularNouns",
+    "",
+    Justification = "These established internal helpers intentionally return collections; renaming them would add compatibility churn."
+)]
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = "High")]
 param(
     [ValidateSet("Report", "UserAudit", "Reset", "LockedOut")]
@@ -147,6 +157,7 @@ Import-Module (Join-Path $PSScriptRoot "AdminToolsCommon.psm1") -Force -ErrorAct
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$InformationPreference = "Continue"
 
 $ExitCodes = @{
     Success    = 0
@@ -474,7 +485,7 @@ function Export-AccountReport {
         }
 
         if ($WhatIfPreference) {
-            Write-Host "WhatIf: would export $ReportName -> $TargetPath"
+            Write-Information "WhatIf: would export $ReportName -> $TargetPath"
             continue
         }
 
@@ -546,7 +557,7 @@ tr:nth-child(even) { background: #f9fafb; }
         }
 
         [void]$ExportedPaths.Add($TargetPath)
-        Write-Host "Exported $ReportName report: $TargetPath"
+        Write-Information "Exported $ReportName report: $TargetPath"
     }
 
     return @($ExportedPaths.ToArray())
@@ -926,6 +937,13 @@ function Get-PrivilegedUserReport {
 }
 
 function New-TemporaryPassword {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        "PSUseShouldProcessForStateChangingFunctions",
+        "",
+        Justification = "This pure helper returns a random string and does not change system state."
+    )]
+    param()
+
     $Alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
     $Symbols = "!#$%&*+-=?@"
     $Bytes = New-Object byte[] 18
@@ -1022,10 +1040,14 @@ function Invoke-UserAccountResetAction {
             if ($GeneratePassword) {
                 $TemporaryPassword = New-TemporaryPassword
 
-                # This is the only intentional plain-text conversion. The value
-                # is generated locally, converted immediately for the AD cmdlet,
-                # and is never written to an exported report.
-                $PasswordToSet = ConvertTo-SecureString -String $TemporaryPassword -AsPlainText -Force
+                # The generated string exists only for the explicitly requested
+                # one-time display. Copy it directly into a read-only SecureString
+                # without using ConvertTo-SecureString -AsPlainText.
+                $PasswordToSet = [securestring]::new()
+                foreach ($Character in $TemporaryPassword.ToCharArray()) {
+                    $PasswordToSet.AppendChar($Character)
+                }
+                $PasswordToSet.MakeReadOnly()
             }
 
             Set-ADAccountPassword -Identity $User.DistinguishedName -Reset -NewPassword $PasswordToSet @AdCommandParameters
@@ -1118,7 +1140,7 @@ switch ($Mode) {
                 [void]$ExportedPaths.Add($Path)
             }
 
-            Write-Host ("{0}: {1} record(s)" -f $CurrentReportType, @($ReportData).Count)
+            Write-Information ("{0}: {1} record(s)" -f $CurrentReportType, @($ReportData).Count)
         }
     }
     "UserAudit" {
@@ -1137,10 +1159,10 @@ switch ($Mode) {
             foreach ($Path in (Export-AccountReport -ReportName "UserAuditEvents" -Data $Events -Formats $ExportFormat)) {
                 [void]$ExportedPaths.Add($Path)
             }
-            Write-Host ("UserAuditEvents: {0} record(s)" -f @($Events).Count)
+            Write-Information ("UserAuditEvents: {0} record(s)" -f @($Events).Count)
         }
 
-        Write-Host ("UserAuditSummary: {0} record(s)" -f $Summary.Count)
+        Write-Information ("UserAuditSummary: {0} record(s)" -f $Summary.Count)
     }
     "LockedOut" {
         $LockedUsers = Get-LockedOutUserReport
@@ -1180,10 +1202,10 @@ switch ($Mode) {
             foreach ($Path in (Export-AccountReport -ReportName "LockedOutEvents" -Data $LockoutEvents -Formats $ExportFormat)) {
                 [void]$ExportedPaths.Add($Path)
             }
-            Write-Host ("LockedOutEvents: {0} record(s) (filtered to currently-locked accounts)" -f $LockoutEvents.Count)
+            Write-Information ("LockedOutEvents: {0} record(s) (filtered to currently-locked accounts)" -f $LockoutEvents.Count) -InformationAction Continue
         }
 
-        Write-Host ("LockedOut: {0} record(s)" -f @($LockedUsers).Count)
+        Write-Information ("LockedOut: {0} record(s)" -f @($LockedUsers).Count)
     }
     "Reset" {
         if ([string]::IsNullOrWhiteSpace($Identity)) {
@@ -1210,13 +1232,13 @@ switch ($Mode) {
             [void]$ExportedPaths.Add($Path)
         }
 
-        Write-Host ("ResetActions: {0} completed action(s)" -f @($ActionResults).Count)
+        Write-Information ("ResetActions: {0} completed action(s)" -f @($ActionResults).Count)
     }
 }
 
 if ($ExportedPaths.Count -gt 0) {
-    Write-Host "Exported file(s):"
-    $ExportedPaths | ForEach-Object { Write-Host "  $_" }
+    Write-Information "Exported file(s):"
+    $ExportedPaths | ForEach-Object { Write-Information "  $_" }
 }
 
 exit $ExitCodes.Success

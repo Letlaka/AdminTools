@@ -7,6 +7,13 @@
         Import-Module (Join-Path $PSScriptRoot "AdminToolsCommon.psm1") -Force
 #>
 
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+    "PSUseSingularNouns",
+    "",
+    Justification = "These established public helpers return or validate collections; renaming them would break callers."
+)]
+param()
+
 Set-StrictMode -Version Latest
 
 $Script:DefaultPrivilegedGroupNames = @(
@@ -178,6 +185,11 @@ function Split-CredentialUserName {
 }
 
 function New-SecurityEventXPathQuery {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        "PSUseShouldProcessForStateChangingFunctions",
+        "",
+        Justification = "This pure helper constructs and returns an XPath string; it does not change system state."
+    )]
     param(
         [int[]]$Ids,
         [string]$ProviderName,
@@ -249,12 +261,12 @@ function Get-SecurityAuditEvents {
         $Events = New-Object System.Collections.Generic.List[object]
 
         while ($true) {
-            $Event = $Reader.ReadEvent()
-            if ($null -eq $Event) {
+            $EventRecord = $Reader.ReadEvent()
+            if ($null -eq $EventRecord) {
                 break
             }
 
-            [void]$Events.Add($Event)
+            [void]$Events.Add($EventRecord)
 
             if ($MaxEvents -gt 0 -and $Events.Count -ge $MaxEvents) {
                 break
@@ -413,7 +425,7 @@ function Assert-SafeTextValues {
 }
 
 # Exported to satisfy the retry test scaffold; Scan-ADComputers keeps its
-# logging-aware implementation because its Write-Log function is script-local.
+# logging-aware implementation because its Write-AdminToolsLog function is script-local.
 function Get-WithRetry {
     param(
         [Parameter(Mandatory = $true)]

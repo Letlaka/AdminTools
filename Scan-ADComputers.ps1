@@ -114,6 +114,16 @@ using module ./AdminToolsCommon.psm1
     .\Scan-ADComputers.ps1 -ComputerType Server -Mode Full -NoProgress
 #>
 
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+    "PSUseSingularNouns",
+    "",
+    Justification = "These established internal helpers intentionally return or validate collections."
+)]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+    "PSUseUsingScopeModifierInNewRunspaces",
+    "",
+    Justification = "Flagged names are parameters of nested functions declared inside each parallel runspace, not captured parent variables."
+)]
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [Parameter(Mandatory = $false)]
@@ -224,6 +234,8 @@ param(
 
 Import-Module (Join-Path $PSScriptRoot "AdminToolsCommon.psm1") -Force -ErrorAction Stop
 
+$InformationPreference = "Continue"
+
 $ScriptDirectory = if ($PSScriptRoot) {
     $PSScriptRoot
 }
@@ -258,7 +270,7 @@ if ($ForceOverwrite -and $NoClobber) {
     exit $ExitCodes.Validation
 }
 
-function Write-Log {
+function Write-AdminToolsLog {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Message,
@@ -272,7 +284,7 @@ function Write-Log {
     $entry = "[{0}] [{1}] {2}" -f $timestamp, $Level.ToUpperInvariant(), $Message
 
     switch ($Level) {
-        "Info" { Write-Host $Message }
+        "Info" { Write-Information $Message }
         "Warning" { Write-Warning $Message }
         "Error" { Write-Error $Message }
         "Verbose" { Write-Verbose $Message }
@@ -293,7 +305,7 @@ function Write-ErrorAndExit {
         [string]$CodeKey = "General"
     )
 
-    Write-Log -Message $Message -Level Error
+    Write-AdminToolsLog -Message $Message -Level Error
     exit $ExitCodes[$CodeKey]
 }
 
@@ -509,6 +521,11 @@ $script:ConfigSourcedParameters = [System.Collections.Generic.HashSet[string]]::
 )
 
 function Set-ParameterFromConfig {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        "PSUseShouldProcessForStateChangingFunctions",
+        "",
+        Justification = "This initialization helper applies configuration to script-local variables; ShouldProcess would incorrectly skip config under WhatIf."
+    )]
     param(
         [Parameter(Mandatory = $true)]
         [psobject]$ConfigObject,
@@ -589,7 +606,7 @@ function Initialize-LogFile {
     )
 
     if ($WhatIfPreference) {
-        Write-Host "WhatIf: would initialize log file -> $Path"
+        Write-Information "WhatIf: would initialize log file -> $Path"
         return
     }
 
@@ -649,17 +666,17 @@ function Get-WithRetry {
 
             $isPermanent = $PermanentPatterns | Where-Object { $errorMessage -match $_ }
             if ($isPermanent) {
-                Write-Log -Message ("Permanent failure, not retrying: {0}" -f $errorMessage) -Level Warning
+                Write-AdminToolsLog -Message ("Permanent failure, not retrying: {0}" -f $errorMessage) -Level Warning
                 throw
             }
 
             $attempt++
-            Write-Log -Message ("Attempt {0} failed: {1}" -f $attempt, $errorMessage) -Level Warning
+            Write-AdminToolsLog -Message ("Attempt {0} failed: {1}" -f $attempt, $errorMessage) -Level Warning
 
             if ($attempt -lt $MaxAttempts) {
                 $isTransient = $TransientPatterns | Where-Object { $errorMessage -match $_ }
                 if (-not $isTransient) {
-                    Write-Log -Message "Failure does not match known transient patterns; retrying anyway." -Level Warning
+                    Write-AdminToolsLog -Message "Failure does not match known transient patterns; retrying anyway." -Level Warning
                 }
                 Start-Sleep -Seconds $DelaySeconds
             }
@@ -1104,7 +1121,7 @@ function Export-DataSet {
             $targetPath = "{0}.{1}" -f $BasePath, $lowerFormat
 
             if ($WhatIfPreference) {
-                Write-Host "WhatIf: would export $Title -> $targetPath"
+                Write-Information "WhatIf: would export $Title -> $targetPath" -InformationAction Continue
                 $exportIndex++
                 Write-ScanProgress -Id 6 -Activity $progressActivity `
                     -Status ("Completed {0} of {1} format(s)" -f $exportIndex, $formatList.Count) `
@@ -1174,7 +1191,7 @@ tr:nth-child(even) { background: #f9fafb; }
                 }
             }
 
-            Write-Log -Message ("Exported {0}: {1}" -f $Title, $targetPath) -Level Info
+            Write-AdminToolsLog -Message ("Exported {0}: {1}" -f $Title, $targetPath) -Level Info
             $exportedPaths.Add($targetPath)
             $exportIndex++
             Write-ScanProgress -Id 6 -Activity $progressActivity `
@@ -1292,7 +1309,7 @@ function Get-DeltaRecords {
         $previousEnabled = Convert-ToNullableBool -Value $previousRecord.Enabled
         $currentEnabled = Convert-ToNullableBool -Value $currentRecord.Enabled
 
-        if ($previousEnabled -ne $null -and $currentEnabled -ne $null -and $previousEnabled -ne $currentEnabled) {
+        if ($null -ne $previousEnabled -and $null -ne $currentEnabled -and $previousEnabled -ne $currentEnabled) {
             $changes.Add([PSCustomObject]@{
                     ChangeType              = if ($currentEnabled) { "ReEnabled" } else { "Disabled" }
                     IdentityKey             = $key
@@ -1787,7 +1804,7 @@ function Invoke-OperationalEnrichment {
         Complete-ScanProgress -Id 5 -Activity $progressActivity
     }
 
-    Write-Log -Message ("Operational enrichment complete: {0} device record(s) processed." -f $results.Count) -Level Info
+    Write-AdminToolsLog -Message ("Operational enrichment complete: {0} device record(s) processed." -f $results.Count) -Level Info
     return @($results | Sort-Object -Property Index | ForEach-Object { $_.Record })
 }
 
@@ -1842,11 +1859,11 @@ function Invoke-AdComputerQuery {
             }
 
             if ([string]::IsNullOrWhiteSpace([string]$queryWorkItem.SearchBase)) {
-                Write-Log -Message "Running AD query against full scope." -Level Verbose
+                Write-AdminToolsLog -Message "Running AD query against full scope." -Level Verbose
             }
             else {
                 $queryParameters["SearchBase"] = $queryWorkItem.SearchBase
-                Write-Log -Message "Running AD query against search base '$($queryWorkItem.SearchBase)'." -Level Verbose
+                Write-AdminToolsLog -Message "Running AD query against search base '$($queryWorkItem.SearchBase)'." -Level Verbose
             }
 
             Write-ScanProgress -Id 1 -Activity $progressActivity `
@@ -1878,7 +1895,7 @@ function Invoke-AdComputerQuery {
         Complete-ScanProgress -Id 1 -Activity $progressActivity
     }
 
-    Write-Log -Message ("AD discovery complete: {0} unique device(s) discovered across {1} query operation(s)." -f $allResults.Count, $queryWorkItems.Count) -Level Info
+    Write-AdminToolsLog -Message ("AD discovery complete: {0} unique device(s) discovered across {1} query operation(s)." -f $allResults.Count, $queryWorkItems.Count) -Level Info
 
     return @($allResults.ToArray())
 }
@@ -1996,8 +2013,8 @@ catch {
     Write-ErrorAndExit -Message "Failed to prepare output or log location: $($_.Exception.Message)" -CodeKey Export
 }
 
-Write-Log -Message "Run started at $RunStartedAt" -Level Info
-Write-Log -Message "Script directory: $ScriptDirectory" -Level Verbose
+Write-AdminToolsLog -Message "Run started at $RunStartedAt" -Level Info
+Write-AdminToolsLog -Message "Script directory: $ScriptDirectory" -Level Verbose
 
 if ($Mode -eq "Targeted") {
     if ([string]::IsNullOrWhiteSpace($ComputerListPath)) {
@@ -2023,7 +2040,7 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 Import-TrustedActiveDirectoryModule
 
 if (-not $Credential) {
-    Write-Log -Message "No credential provided; prompting for credentials..." -Level Info
+    Write-AdminToolsLog -Message "No credential provided; prompting for credentials..." -Level Info
     $Credential = Get-Credential -Message "Enter credentials for AD query and optional remote inventory"
 }
 
@@ -2096,10 +2113,10 @@ if (-not [string]::IsNullOrWhiteSpace($DomainController)) {
     $adQueryParameters["Server"] = $DomainController
 }
 
-Write-Log -Message "Mode: $Mode" -Level Info
-Write-Log -Message "Computer type: $ComputerType" -Level Info
-Write-Log -Message "Query scope: $queryScopeDescription" -Level Info
-Write-Log -Message "Export formats: $([string]::Join(', ', @($ExportFormat)))" -Level Info
+Write-AdminToolsLog -Message "Mode: $Mode" -Level Info
+Write-AdminToolsLog -Message "Computer type: $ComputerType" -Level Info
+Write-AdminToolsLog -Message "Query scope: $queryScopeDescription" -Level Info
+Write-AdminToolsLog -Message "Export formats: $([string]::Join(', ', @($ExportFormat)))" -Level Info
 
 $exportPrefix = Get-ComputerExportPrefix -Type $ComputerType
 $domainClean = Get-SafeFileNamePart -Value $DomainName
@@ -2124,14 +2141,14 @@ $auditRecords = @()
 
 try {
     if ($Mode -eq "Full") {
-        Write-Log -Message "[MODE] Full AD inventory scan." -Level Info
+        Write-AdminToolsLog -Message "[MODE] Full AD inventory scan." -Level Info
         $allQueriedComputers = Invoke-AdComputerQuery -Filters @($baseFilter) -BaseQueryParameters $adQueryParameters -QuerySearchBases $querySearchBases
         $adReturnedCount = $allQueriedComputers.Count
         $computers = @($allQueriedComputers | Where-Object { -not (Test-IsExcludedByOu -DistinguishedName $_.distinguishedName -ExcludedOuList $ExcludeOU) })
         $excludedByOuCount = $adReturnedCount - $computers.Count
     }
     else {
-        Write-Log -Message "[MODE] Targeted scan using list file: $ComputerListPath" -Level Info
+        Write-AdminToolsLog -Message "[MODE] Targeted scan using list file: $ComputerListPath" -Level Info
         $requestedComputers = Get-RequestedComputerList -ListPath $ComputerListPath -DefaultDomainName $DomainName
         $requestedCount = $requestedComputers.Count
 
@@ -2139,7 +2156,7 @@ try {
             Write-ErrorAndExit -Message "The computer list file is empty: $ComputerListPath" -CodeKey Validation
         }
 
-        Write-Log -Message "Requested computer names: $requestedCount" -Level Info
+        Write-AdminToolsLog -Message "Requested computer names: $requestedCount" -Level Info
         $targetedFilters = Get-RequestedComputerFilters -RequestedComputers $requestedComputers -BaseFilter $baseFilter
         $allQueriedComputers = Invoke-AdComputerQuery -Filters $targetedFilters -BaseQueryParameters $adQueryParameters -QuerySearchBases $querySearchBases
         $adReturnedCount = $allQueriedComputers.Count
@@ -2152,7 +2169,7 @@ try {
 
         $connectivityLookup = @{}
         if ($TestMethod -ne "None") {
-            Write-Log -Message "Running targeted connectivity validation with method '$TestMethod'." -Level Info
+            Write-AdminToolsLog -Message "Running targeted connectivity validation with method '$TestMethod'." -Level Info
             $connectivityTargets = @(
                 for ($index = 0; $index -lt $requestedComputers.Count; $index++) {
                     [PSCustomObject]@{
@@ -2164,7 +2181,7 @@ try {
 
             $connectivityLookup = Get-ConnectivityLookup -TargetItems $connectivityTargets -Method $TestMethod -TimeoutSecondsValue $TimeoutSeconds -PingCountValue $PingCount -ThrottleLimitValue $ThrottleLimit
             $reachableCount = @($connectivityLookup.Values | Where-Object { $_.Reachable -eq $true }).Count
-            Write-Log -Message ("Targeted connectivity complete: {0} of {1} target(s) reachable." -f $reachableCount, $requestedCount) -Level Info
+            Write-AdminToolsLog -Message ("Targeted connectivity complete: {0} of {1} target(s) reachable." -f $reachableCount, $requestedCount) -Level Info
         }
         else {
             $reachableCount = $null
@@ -2264,7 +2281,7 @@ try {
         $foundInAdCount = ($auditRecords | Where-Object { $_.FoundInAD -eq $true }).Count
         $matchedCount = $computers.Count
         $skippedCount = ($auditRecords | Where-Object { -not $_.Exported }).Count
-        Write-Log -Message ("Target matching complete: {0} of {1} requested device(s) selected for export." -f $matchedCount, $requestedCount) -Level Info
+        Write-AdminToolsLog -Message ("Target matching complete: {0} of {1} requested device(s) selected for export." -f $matchedCount, $requestedCount) -Level Info
     }
 }
 catch {
@@ -2303,7 +2320,7 @@ if ($Mode -eq "Targeted") {
 }
 
 if ($computers.Count -eq 0) {
-    Write-Log -Message "No $ComputerType objects found matching the current criteria." -Level Warning
+    Write-AdminToolsLog -Message "No $ComputerType objects found matching the current criteria." -Level Warning
 }
 
 $preparedRecordCount = 0
@@ -2322,7 +2339,7 @@ try {
 finally {
     Complete-ScanProgress -Id 4 -Activity $preparationActivity
 }
-Write-Log -Message ("Record preparation complete: {0} device record(s) prepared." -f $resultList.Count) -Level Info
+Write-AdminToolsLog -Message ("Record preparation complete: {0} device record(s) prepared." -f $resultList.Count) -Level Info
 
 if ($Mode -eq "Targeted" -and $resultList.Count -gt 0) {
     $auditById = @{}
@@ -2412,24 +2429,24 @@ catch {
     Write-ErrorAndExit -Message "Failed to export final report data: $($_.Exception.Message)" -CodeKey Export
 }
 
-Write-Log -Message "Summary:" -Level Info
-Write-Log -Message ("  Requested        : {0}" -f $requestedCount) -Level Info
-Write-Log -Message ("  AD Returned      : {0}" -f $adReturnedCount) -Level Info
-Write-Log -Message ("  Excluded By OU   : {0}" -f $excludedByOuCount) -Level Info
+Write-AdminToolsLog -Message "Summary:" -Level Info
+Write-AdminToolsLog -Message ("  Requested        : {0}" -f $requestedCount) -Level Info
+Write-AdminToolsLog -Message ("  AD Returned      : {0}" -f $adReturnedCount) -Level Info
+Write-AdminToolsLog -Message ("  Excluded By OU   : {0}" -f $excludedByOuCount) -Level Info
 if ($Mode -eq "Targeted") {
-    Write-Log -Message ("  Reachable        : {0}" -f $(if ($null -eq $reachableCount) { "Skipped" } else { $reachableCount })) -Level Info
-    Write-Log -Message ("  Found In AD      : {0}" -f $foundInAdCount) -Level Info
-    Write-Log -Message ("  Skipped          : {0}" -f $skippedCount) -Level Info
+    Write-AdminToolsLog -Message ("  Reachable        : {0}" -f $(if ($null -eq $reachableCount) { "Skipped" } else { $reachableCount })) -Level Info
+    Write-AdminToolsLog -Message ("  Found In AD      : {0}" -f $foundInAdCount) -Level Info
+    Write-AdminToolsLog -Message ("  Skipped          : {0}" -f $skippedCount) -Level Info
 }
 else {
-    Write-Log -Message "  Reachable        : Not evaluated in Full mode unless operational checks were requested." -Level Info
+    Write-AdminToolsLog -Message "  Reachable        : Not evaluated in Full mode unless operational checks were requested." -Level Info
 }
-Write-Log -Message ("  Exported         : {0}" -f $resultList.Count) -Level Info
+Write-AdminToolsLog -Message ("  Exported         : {0}" -f $resultList.Count) -Level Info
 if ($InactiveDays -gt 0) {
-    Write-Log -Message ("  Stale            : {0}" -f @($resultList | Where-Object { $_.IsStale -eq $true }).Count) -Level Info
+    Write-AdminToolsLog -Message ("  Stale            : {0}" -f @($resultList | Where-Object { $_.IsStale -eq $true }).Count) -Level Info
 }
 if (-not [string]::IsNullOrWhiteSpace($CompareWithPrevious)) {
-    Write-Log -Message ("  Delta Records    : {0}" -f $deltaCount) -Level Info
+    Write-AdminToolsLog -Message ("  Delta Records    : {0}" -f $deltaCount) -Level Info
 }
 
 exit 0
