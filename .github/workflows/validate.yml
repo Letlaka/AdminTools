@@ -1,0 +1,62 @@
+name: Validate
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse check all PowerShell files
+        shell: pwsh
+        run: |
+          $errors = @()
+          Get-ChildItem -Recurse -Filter "*.ps1" | ForEach-Object {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName, [ref]$tokens, [ref]$parseErrors
+            ) | Out-Null
+            if ($parseErrors.Count -gt 0) {
+              $errors += "$($_.Name): $($parseErrors -join ', ')"
+            }
+          }
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_ }
+            exit 1
+          }
+          Write-Host "All files parsed successfully."
+
+      - name: Run PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $results = Invoke-ScriptAnalyzer -Path . -Recurse -Severity Warning,Error
+          if ($results) {
+            $results | Format-Table -AutoSize
+            exit 1
+          }
+
+      - name: Run Pester tests
+        shell: pwsh
+        run: |
+          Install-Module Pester -Force -Scope CurrentUser -MinimumVersion 5.0
+          $config = New-PesterConfiguration
+          $config.Run.Path = "./tests"
+          $config.Output.Verbosity = "Detailed"
+          $result = Invoke-Pester -Configuration $config -PassThru
+          if ($result.FailedCount -gt 0) { exit 1 }
+
+      - name: Verify manual can be regenerated
+        shell: pwsh
+        run: |
+          .\tools\New-AdminToolsManual.ps1 -OutputDirectory manual
+          if (-not (Test-Path "manual/AdminTools-Manual.md")) {
+            Write-Error "Manual generation failed."
+            exit 1
+          }

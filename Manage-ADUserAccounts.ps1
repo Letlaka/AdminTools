@@ -1,4 +1,5 @@
 #requires -Version 5.1
+using module ./AdminToolsCommon.psm1
 <#
 .SYNOPSIS
     Manage and report on Active Directory user accounts.
@@ -29,6 +30,9 @@
 
 .PARAMETER Unlock
     Unlock the selected user in Reset mode.
+
+.PARAMETER Enable
+    Enable the selected user account in Reset mode.
 
 .PARAMETER ResetPassword
     Reset the selected user's password in Reset mode.
@@ -94,16 +98,7 @@ param(
     [ValidateRange(1, 10000)]
     [int]$MaxAttributeValueLength = 500,
 
-    [string[]]$PrivilegedGroupNames = @(
-        "Domain Admins",
-        "Enterprise Admins",
-        "Schema Admins",
-        "Administrators",
-        "Account Operators",
-        "Server Operators",
-        "Backup Operators",
-        "Group Policy Creator Owners"
-    ),
+    [string[]]$PrivilegedGroupNames = (Get-DefaultPrivilegedGroupNames),
 
     [string]$OutputDirectory,
 
@@ -146,8 +141,19 @@ param(
     [switch]$DisableCsvSanitization
 )
 
+Import-Module (Join-Path $PSScriptRoot "AdminToolsCommon.psm1") -Force -ErrorAction Stop
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+$ExitCodes = @{
+    Success    = 0
+    General    = 1
+    Prereq     = 2
+    Validation = 4
+    ADQuery    = 5
+    Export     = 7
+}
 
 $ScriptDirectory = if ($PSScriptRoot) {
     $PSScriptRoot
@@ -189,66 +195,6 @@ $UserEventActionMap = @{
 
 if ($ForceOverwrite -and $NoClobber) {
     throw "ForceOverwrite and NoClobber cannot be used together."
-}
-
-function Test-IsTrustedActiveDirectoryModulePath {
-    param(
-        [string]$Path
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Path) -or [string]::IsNullOrWhiteSpace($env:WINDIR)) {
-        return $false
-    }
-
-    $windowsRoot = (Join-Path -Path $env:WINDIR -ChildPath "System32\WindowsPowerShell\v1.0\Modules\ActiveDirectory").TrimEnd('\')
-    $modulePath = $Path.TrimEnd('\')
-
-    return (
-        $modulePath.Equals($windowsRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
-        $modulePath.StartsWith("$windowsRoot\", [System.StringComparison]::OrdinalIgnoreCase)
-    )
-}
-
-function Import-ActiveDirectoryModule {
-    $LoadedModules = @(Get-Module -Name ActiveDirectory -ErrorAction SilentlyContinue)
-    if ($LoadedModules.Count -gt 0) {
-        foreach ($LoadedModule in $LoadedModules) {
-            if (-not (Test-IsTrustedActiveDirectoryModulePath -Path $LoadedModule.ModuleBase)) {
-                Write-Warning "ActiveDirectory module is already loaded from an untrusted path: $($LoadedModule.ModuleBase)"
-                return $false
-            }
-        }
-
-        return $true
-    }
-
-    $TrustedModule = @(Get-Module -ListAvailable -Name ActiveDirectory -ErrorAction SilentlyContinue |
-            Where-Object { Test-IsTrustedActiveDirectoryModulePath -Path $_.ModuleBase } |
-            Sort-Object -Property Version -Descending |
-            Select-Object -First 1)
-
-    if ($TrustedModule.Count -eq 0) {
-        Write-Warning "Trusted ActiveDirectory module could not be found in the Windows RSAT module path."
-        return $false
-    }
-
-    try {
-        $ModuleSpecification = @{
-            ModuleName    = "ActiveDirectory"
-            ModuleVersion = $TrustedModule[0].Version
-        }
-
-        if ($TrustedModule[0].Guid -and $TrustedModule[0].Guid -ne [guid]::Empty) {
-            $ModuleSpecification["Guid"] = $TrustedModule[0].Guid
-        }
-
-        Import-Module -FullyQualifiedName $ModuleSpecification -ErrorAction Stop
-        return $true
-    }
-    catch {
-        Write-Warning "ActiveDirectory module could not be loaded from trusted path '$($TrustedModule[0].ModuleBase)'. Error: $($_.Exception.Message)"
-        return $false
-    }
 }
 
 function Get-AdCommandParameters {
@@ -303,184 +249,6 @@ function Get-DomainControllerNames {
     return Get-ADDomainController -Filter * @AdCommandParameters |
         Where-Object { -not $_.IsReadOnly } |
         Select-Object -ExpandProperty HostName
-}
-
-function ConvertTo-EventDataMap {
-    param(
-        [System.Diagnostics.Eventing.Reader.EventRecord]$EventRecord
-    )
-
-    [xml]$EventXml = $EventRecord.ToXml()
-    $EventDataMap = @{}
-
-    foreach ($DataElement in $EventXml.Event.EventData.Data) {
-        if ($null -ne $DataElement.Name) {
-            $EventDataMap[$DataElement.Name] = [string]$DataElement.'#text'
-        }
-    }
-
-    return $EventDataMap
-}
-
-function Get-MapValue {
-    param(
-        [hashtable]$Map,
-        [string]$Key
-    )
-
-    if ($Map.ContainsKey($Key)) {
-        return $Map[$Key]
-    }
-
-    return $null
-}
-
-function Join-DomainAccount {
-    param(
-        [string]$DomainName,
-        [string]$AccountName
-    )
-
-    if ([string]::IsNullOrWhiteSpace($AccountName) -or $AccountName -eq "-") {
-        return $null
-    }
-
-    if ([string]::IsNullOrWhiteSpace($DomainName) -or $DomainName -eq "-") {
-        return $AccountName
-    }
-
-    return "$DomainName\$AccountName"
-}
-
-function Limit-TextLength {
-    param(
-        [string]$Text,
-        [int]$MaximumLength
-    )
-
-    if ([string]::IsNullOrEmpty($Text) -or $Text.Length -le $MaximumLength) {
-        return $Text
-    }
-
-    return $Text.Substring(0, $MaximumLength) + "...[truncated]"
-}
-
-function Split-CredentialUserName {
-    param(
-        [PSCredential]$Credential
-    )
-
-    $UserName = $Credential.UserName
-
-    if ($UserName -match '\\') {
-        $Parts = $UserName.Split('\', 2)
-        return [pscustomobject]@{
-            Domain = $Parts[0]
-            User   = $Parts[1]
-        }
-    }
-
-    return [pscustomobject]@{
-        Domain = $null
-        User   = $UserName
-    }
-}
-
-function New-SecurityEventXPathQuery {
-    param(
-        [int[]]$Ids,
-        [string]$ProviderName,
-        [datetime]$StartDate
-    )
-
-    $EventIdFilter = (($Ids | ForEach-Object { "EventID=$_" }) -join " or ")
-    $StartUtc = $StartDate.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", [System.Globalization.CultureInfo]::InvariantCulture)
-
-    return "*[System[Provider[@Name='$ProviderName'] and ($EventIdFilter) and TimeCreated[@SystemTime >= '$StartUtc']]]"
-}
-
-function Get-SecurityAuditEvents {
-    param(
-        [string]$ComputerName,
-        [int[]]$Ids,
-        [string]$ProviderName,
-        [datetime]$StartDate,
-        [int]$MaxEvents,
-        [PSCredential]$Credential
-    )
-
-    if (-not $Credential) {
-        $GetWinEventParameters = @{
-            ComputerName   = $ComputerName
-            FilterHashtable = @{
-                LogName      = "Security"
-                ProviderName = $ProviderName
-                Id           = $Ids
-                StartTime    = $StartDate
-            }
-            ErrorAction    = "Stop"
-        }
-
-        if ($MaxEvents -gt 0) {
-            $GetWinEventParameters["MaxEvents"] = $MaxEvents
-        }
-
-        return @(Get-WinEvent @GetWinEventParameters)
-    }
-
-    $CredentialName = Split-CredentialUserName -Credential $Credential
-    $Session = $null
-    $Reader = $null
-
-    try {
-        $Session = [System.Diagnostics.Eventing.Reader.EventLogSession]::new(
-            $ComputerName,
-            $CredentialName.Domain,
-            $CredentialName.User,
-            $Credential.Password,
-            [System.Diagnostics.Eventing.Reader.SessionAuthentication]::Default
-        )
-
-        $XPathQuery = New-SecurityEventXPathQuery `
-            -Ids $Ids `
-            -ProviderName $ProviderName `
-            -StartDate $StartDate
-
-        $Query = [System.Diagnostics.Eventing.Reader.EventLogQuery]::new(
-            "Security",
-            [System.Diagnostics.Eventing.Reader.PathType]::LogName,
-            $XPathQuery
-        )
-        $Query.Session = $Session
-        $Query.ReverseDirection = $true
-
-        $Reader = [System.Diagnostics.Eventing.Reader.EventLogReader]::new($Query)
-        $Events = New-Object System.Collections.Generic.List[object]
-
-        while ($true) {
-            $Event = $Reader.ReadEvent()
-            if ($null -eq $Event) {
-                break
-            }
-
-            [void]$Events.Add($Event)
-
-            if ($MaxEvents -gt 0 -and $Events.Count -ge $MaxEvents) {
-                break
-            }
-        }
-
-        return @($Events.ToArray())
-    }
-    finally {
-        if ($null -ne $Reader) {
-            $Reader.Dispose()
-        }
-
-        if ($null -ne $Session) {
-            $Session.Dispose()
-        }
-    }
 }
 
 function ConvertTo-UserAuditRecord {
@@ -570,6 +338,14 @@ function Get-UserAuditEvents {
         -AllowUnverified:$AllowUnverifiedDomainController `
         -Credential $Credential
 
+    if (@($ResolvedDomainControllers).Count -eq 0) {
+        throw "No writable Domain Controllers were found. Verify AD connectivity and that the account has permission to enumerate domain controllers."
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($Identity) -and $MaxEventsPerDomainController -gt 0) {
+        Write-Warning "UserAudit event filtering is applied after MaxEventsPerDomainController cap. Set MaxEventsPerDomainController to 0 to ensure all events for the target user are returned."
+    }
+
     $SuccessfulDomainControllers = New-Object System.Collections.Generic.List[string]
     $FailedDomainControllers = New-Object System.Collections.Generic.List[object]
 
@@ -577,6 +353,12 @@ function Get-UserAuditEvents {
         Write-Verbose "Reading Security log from $DomainController from $StartTime"
 
         try {
+            # NOTE: MaxEventsPerDomainController caps the raw event pull before
+            # per-user filtering is applied. If this limit is set very low and
+            # the target user's events are not among the first N events returned,
+            # they will be silently omitted. Set MaxEventsPerDomainController to
+            # 0 (no limit) when querying for a specific user or when using
+            # AdminOnly to ensure complete results.
             $SecurityEvents = Get-SecurityAuditEvents `
                 -ComputerName $DomainController `
                 -Ids $UserEventIds `
@@ -626,138 +408,6 @@ function Get-UserAuditEvents {
     }
 
     return @($AllRecords | Sort-Object TimeCreated -Descending)
-}
-
-function ConvertTo-SafeCsvValue {
-    param(
-        [AllowNull()]
-        [object]$Value
-    )
-
-    if ($null -eq $Value -or -not ($Value -is [string])) {
-        return $Value
-    }
-
-    if ($Value -match '^[\t\r\n]' -or $Value -match '^\s*[=+\-@]') {
-        return "'$Value"
-    }
-
-    return $Value
-}
-
-function ConvertTo-SafeCsvRecord {
-    param(
-        [Parameter(ValueFromPipeline = $true)]
-        [psobject]$InputObject
-    )
-
-    process {
-        $Properties = [ordered]@{}
-
-        foreach ($Property in $InputObject.PSObject.Properties) {
-            $Properties[$Property.Name] = ConvertTo-SafeCsvValue -Value $Property.Value
-        }
-
-        [pscustomobject]$Properties
-    }
-}
-
-function Test-IsUncPath {
-    param(
-        [string]$Path
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Path)) {
-        return $false
-    }
-
-    try {
-        $uri = [System.Uri]$Path
-        return $uri.IsUnc
-    }
-    catch {
-        return $Path.StartsWith("\\", [System.StringComparison]::Ordinal)
-    }
-}
-
-function Test-IsSafeDnsName {
-    param(
-        [Parameter(Mandatory = $false)]
-        [string]$Name
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Name) -or $Name.Length -gt 253) {
-        return $false
-    }
-
-    if ($Name.StartsWith(".") -or $Name.EndsWith(".")) {
-        return $false
-    }
-
-    foreach ($label in $Name.Split(".")) {
-        if ([string]::IsNullOrWhiteSpace($label) -or $label.Length -gt 63) {
-            return $false
-        }
-
-        if ($label -notmatch '^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$') {
-            return $false
-        }
-    }
-
-    return $true
-}
-
-function Assert-SafeDomainControllerNames {
-    param(
-        [string[]]$Names
-    )
-
-    foreach ($Name in @($Names)) {
-        if ([string]::IsNullOrWhiteSpace($Name)) {
-            continue
-        }
-
-        if (-not (Test-IsSafeDnsName -Name $Name)) {
-            throw "DomainControllers contains an invalid DNS name: $Name"
-        }
-    }
-}
-
-function Test-ContainsControlCharacter {
-    param(
-        [Parameter(Mandatory = $false)]
-        [AllowNull()]
-        [string]$Value
-    )
-
-    return ($null -ne $Value -and $Value -match '[\x00-\x1F\x7F]')
-}
-
-function Assert-SafeTextValues {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Purpose,
-
-        [Parameter(Mandatory = $false)]
-        [AllowNull()]
-        [string[]]$Values,
-
-        [int]$MaximumLength = 4096
-    )
-
-    foreach ($Value in @($Values)) {
-        if ([string]::IsNullOrWhiteSpace($Value)) {
-            continue
-        }
-
-        if ($Value.Length -gt $MaximumLength) {
-            throw "$Purpose value exceeds maximum length $MaximumLength."
-        }
-
-        if (Test-ContainsControlCharacter -Value $Value) {
-            throw "$Purpose contains control characters and was rejected."
-        }
-    }
 }
 
 function Assert-InputPathAllowed {
@@ -826,36 +476,37 @@ function Export-AccountReport {
             continue
         }
 
-        switch ($Format) {
-            "Csv" {
-                $CsvRows = if ($DisableCsvSanitization) {
-                    Write-Warning "CSV sanitization is disabled. Opening this report in spreadsheet software may evaluate account data as formulas."
-                    $Rows
-                }
-                else {
-                    @($Rows | ConvertTo-SafeCsvRecord)
-                }
+        try {
+            switch ($Format) {
+                "Csv" {
+                    $CsvRows = if ($DisableCsvSanitization) {
+                        Write-Warning "CSV sanitization is disabled. Opening this report in spreadsheet software may evaluate account data as formulas."
+                        $Rows
+                    }
+                    else {
+                        @($Rows | ConvertTo-SafeCsvRecord)
+                    }
 
-                if ($CsvRows.Count -gt 0) {
-                    $CsvRows | Export-Csv -LiteralPath $TargetPath -NoTypeInformation -Encoding UTF8
+                    if ($CsvRows.Count -gt 0) {
+                        $CsvRows | Export-Csv -LiteralPath $TargetPath -NoTypeInformation -Encoding UTF8
+                    }
+                    else {
+                        Set-Content -LiteralPath $TargetPath -Value "" -Encoding UTF8
+                    }
                 }
-                else {
-                    Set-Content -LiteralPath $TargetPath -Value "" -Encoding UTF8
-                }
-            }
-            "Json" {
-                $Json = if ($Rows.Count -gt 0) {
-                    $Rows | ConvertTo-Json -Depth 8
-                }
-                else {
-                    "[]"
-                }
+                "Json" {
+                    $Json = if ($Rows.Count -gt 0) {
+                        $Rows | ConvertTo-Json -Depth 8
+                    }
+                    else {
+                        "[]"
+                    }
 
-                Set-Content -LiteralPath $TargetPath -Value $Json -Encoding UTF8
-            }
-            "Html" {
-                $Title = "AD User $ReportName Report"
-                $Style = @"
+                    Set-Content -LiteralPath $TargetPath -Value $Json -Encoding UTF8
+                }
+                "Html" {
+                    $Title = "AD User $ReportName Report"
+                    $Style = @"
 <style>
 body { font-family: Segoe UI, Arial, sans-serif; margin: 24px; color: #1f2937; }
 h1 { margin-bottom: 4px; }
@@ -867,11 +518,11 @@ tr:nth-child(even) { background: #f9fafb; }
 </style>
 "@
 
-                $Body = if ($Rows.Count -gt 0) {
-                    $Rows | ConvertTo-Html -Head $Style -Title $Title -PreContent "<h1>$Title</h1><p class='meta'>Generated $RunStartedAt</p>"
-                }
-                else {
-                    @"
+                    $Body = if ($Rows.Count -gt 0) {
+                        $Rows | ConvertTo-Html -Head $Style -Title $Title -PreContent "<h1>$Title</h1><p class='meta'>Generated $RunStartedAt</p>"
+                    }
+                    else {
+                        @"
 <html>
 <head>$Style<title>$Title</title></head>
 <body>
@@ -881,10 +532,15 @@ tr:nth-child(even) { background: #f9fafb; }
 </body>
 </html>
 "@
-                }
+                    }
 
-                Set-Content -LiteralPath $TargetPath -Value $Body -Encoding UTF8
+                    Set-Content -LiteralPath $TargetPath -Value $Body -Encoding UTF8
+                }
             }
+        }
+        catch {
+            Write-Error "Failed to export report to '$TargetPath': $($_.Exception.Message)"
+            exit $ExitCodes.Export
         }
 
         [void]$ExportedPaths.Add($TargetPath)
@@ -987,14 +643,28 @@ function Get-ScopedUsers {
         $SearchBases += $SearchBaseList
     }
 
+    $SeenGuids = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    $UniqueUsers = New-Object System.Collections.Generic.List[object]
+
     if ($SearchBases.Count -eq 0) {
-        $Users = @(Get-ADUser -Filter $Filter -Properties $Properties @AdCommandParameters)
+        $RawUsers = @(Get-ADUser -Filter $Filter -Properties $Properties @AdCommandParameters)
     }
     else {
-        $Users = foreach ($Scope in $SearchBases) {
+        $RawUsers = foreach ($Scope in $SearchBases) {
             Get-ADUser -Filter $Filter -SearchBase $Scope -Properties $Properties @AdCommandParameters
         }
     }
+
+    foreach ($User in @($RawUsers)) {
+        $Guid = [string]$User.ObjectGUID
+        if ($SeenGuids.Add($Guid)) {
+            [void]$UniqueUsers.Add($User)
+        }
+    }
+
+    $Users = $UniqueUsers.ToArray()
 
     if (-not $IncludeDisabled) {
         $Users = @($Users | Where-Object { $_.Enabled })
@@ -1002,7 +672,9 @@ function Get-ScopedUsers {
 
     foreach ($ExcludedOu in $ExcludeOU) {
         if (-not [string]::IsNullOrWhiteSpace($ExcludedOu)) {
-            $Users = @($Users | Where-Object { -not $_.DistinguishedName.EndsWith($ExcludedOu, [System.StringComparison]::OrdinalIgnoreCase) })
+            $Users = @($Users | Where-Object {
+                -not $_.DistinguishedName.EndsWith($ExcludedOu, [System.StringComparison]::OrdinalIgnoreCase)
+            })
         }
     }
 
@@ -1102,13 +774,71 @@ function Get-PasswordAgeReport {
 function Get-LockedOutUserReport {
     $AdCommandParameters = Get-AdCommandParameters
     $Properties = Get-UserQueryProperties
-    $Users = @(Search-ADAccount -LockedOut -UsersOnly @AdCommandParameters |
-        ForEach-Object {
-            Get-ADUser -Identity $_.DistinguishedName -Properties $Properties @AdCommandParameters
-        })
+    $SearchBases = @()
 
-    return @(Get-UserAccountSummaryReport -Users $Users |
-        Select-Object SamAccountName, DisplayName, UserPrincipalName, LockedOut, LastBadPasswordAttempt, LastLogonDate, PasswordLastSet, Enabled, DistinguishedName, QueriedAt)
+    if (-not [string]::IsNullOrWhiteSpace($SearchBase)) {
+        $SearchBases += $SearchBase
+    }
+
+    if ($SearchBaseList) {
+        $SearchBases += $SearchBaseList
+    }
+
+    $SeenGuids = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    $Users = New-Object System.Collections.Generic.List[object]
+
+    if ($SearchBases.Count -eq 0) {
+        $LockedAccounts = @(Search-ADAccount -LockedOut -UsersOnly @AdCommandParameters)
+        foreach ($Account in $LockedAccounts) {
+            try {
+                $User = Get-ADUser -Identity $Account.DistinguishedName -Properties $Properties @AdCommandParameters -ErrorAction Stop
+                $Guid = [string]$User.ObjectGUID
+                if ($SeenGuids.Add($Guid)) {
+                    [void]$Users.Add($User)
+                }
+            }
+            catch {
+                Write-Warning "Could not resolve locked-out user '$($Account.DistinguishedName)'. Error: $($_.Exception.Message)"
+            }
+        }
+    }
+    else {
+        foreach ($Scope in $SearchBases) {
+            $LockedAccounts = @(Search-ADAccount -LockedOut -UsersOnly -SearchBase $Scope @AdCommandParameters)
+            foreach ($Account in $LockedAccounts) {
+                try {
+                    $User = Get-ADUser -Identity $Account.DistinguishedName -Properties $Properties @AdCommandParameters -ErrorAction Stop
+                    $Guid = [string]$User.ObjectGUID
+                    if ($SeenGuids.Add($Guid)) {
+                        [void]$Users.Add($User)
+                    }
+                }
+                catch {
+                    Write-Warning "Could not resolve locked-out user '$($Account.DistinguishedName)'. Error: $($_.Exception.Message)"
+                }
+            }
+        }
+    }
+
+    $FilteredUsers = @($Users | Where-Object {
+        $Dn = $_.DistinguishedName
+        $Excluded = $false
+        foreach ($ExcludedOu in $ExcludeOU) {
+            if (-not [string]::IsNullOrWhiteSpace($ExcludedOu) -and
+                $Dn.EndsWith($ExcludedOu, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $Excluded = $true
+                break
+            }
+        }
+        -not $Excluded
+    })
+
+    return @(Get-UserAccountSummaryReport -Users $FilteredUsers |
+        Select-Object SamAccountName, DisplayName, UserPrincipalName, LockedOut,
+            LastBadPasswordAttempt, LastLogonDate, PasswordLastSet, Enabled,
+            DistinguishedName, QueriedAt)
 }
 
 function Get-StaleUserReport {
@@ -1197,7 +927,13 @@ function New-TemporaryPassword {
     $Alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
     $Symbols = "!#$%&*+-=?@"
     $Bytes = New-Object byte[] 18
-    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($Bytes)
+    $Rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $Rng.GetBytes($Bytes)
+    }
+    finally {
+        $Rng.Dispose()
+    }
 
     $Chars = for ($Index = 0; $Index -lt $Bytes.Length; $Index++) {
         if ($Index % 6 -eq 5) {
@@ -1340,17 +1076,19 @@ $ExportedPaths = New-Object System.Collections.Generic.List[string]
 
 switch ($Mode) {
     "Report" {
-        $Users = Get-TargetUsers
+        $UserDependentReportTypes = @("UserSummary", "PasswordAge", "StaleUsers")
+        $NeedsUsers = $ReportType | Where-Object { $UserDependentReportTypes -contains $_ }
+        $Users = if ($NeedsUsers) { Get-TargetUsers } else { @() }
 
         foreach ($CurrentReportType in $ReportType) {
             $ReportData = switch ($CurrentReportType) {
-                "UserSummary" { Get-UserAccountSummaryReport -Users $Users }
-                "PasswordAge" { Get-PasswordAgeReport -Users $Users }
-                "LockedOut" { Get-LockedOutUserReport }
-                "AuditEvents" { Get-UserAuditEvents -User $null }
+                "UserSummary"    { Get-UserAccountSummaryReport -Users $Users }
+                "PasswordAge"    { Get-PasswordAgeReport -Users $Users }
+                "LockedOut"      { Get-LockedOutUserReport }
+                "AuditEvents"    { Get-UserAuditEvents -User $null }
                 "PrivilegedUsers" { Get-PrivilegedUserReport }
-                "DisabledUsers" { Get-DisabledUserReport }
-                "StaleUsers" { Get-StaleUserReport -Users $Users }
+                "DisabledUsers"  { Get-DisabledUserReport }
+                "StaleUsers"     { Get-StaleUserReport -Users $Users }
             }
 
             $Paths = Export-AccountReport -ReportName $CurrentReportType -Data $ReportData -Formats $ExportFormat
@@ -1389,11 +1127,38 @@ switch ($Mode) {
         }
 
         if ($IncludeEvents) {
-            $LockoutEvents = @(Get-UserAuditEvents -User $null | Where-Object { $_.EventId -eq 4740 })
+            # Build a set of identifiers for currently-locked accounts so that
+            # lockout events are restricted to those accounts only.
+            $LockedIdentifiers = [System.Collections.Generic.HashSet[string]]::new(
+                [System.StringComparer]::OrdinalIgnoreCase
+            )
+            foreach ($LockedUser in $LockedUsers) {
+                if (-not [string]::IsNullOrWhiteSpace($LockedUser.SamAccountName)) {
+                    [void]$LockedIdentifiers.Add($LockedUser.SamAccountName)
+                }
+                if (-not [string]::IsNullOrWhiteSpace($LockedUser.UserPrincipalName)) {
+                    [void]$LockedIdentifiers.Add($LockedUser.UserPrincipalName)
+                }
+                if (-not [string]::IsNullOrWhiteSpace([string]$LockedUser.ObjectSID)) {
+                    [void]$LockedIdentifiers.Add([string]$LockedUser.ObjectSID)
+                }
+            }
+
+            $AllLockoutEvents = @(Get-UserAuditEvents -User $null | Where-Object { $_.EventId -eq 4740 })
+            $LockoutEvents = if ($LockedIdentifiers.Count -gt 0) {
+                @($AllLockoutEvents | Where-Object {
+                    $LockedIdentifiers.Contains($_.TargetUser) -or
+                    $LockedIdentifiers.Contains($_.TargetAccount) -or
+                    $LockedIdentifiers.Contains($_.TargetSid)
+                })
+            } else {
+                @()
+            }
+
             foreach ($Path in (Export-AccountReport -ReportName "LockedOutEvents" -Data $LockoutEvents -Formats $ExportFormat)) {
                 [void]$ExportedPaths.Add($Path)
             }
-            Write-Host ("LockedOutEvents: {0} record(s)" -f $LockoutEvents.Count)
+            Write-Host ("LockedOutEvents: {0} record(s) (filtered to currently-locked accounts)" -f $LockoutEvents.Count)
         }
 
         Write-Host ("LockedOut: {0} record(s)" -f @($LockedUsers).Count)
@@ -1422,3 +1187,5 @@ if ($ExportedPaths.Count -gt 0) {
     Write-Host "Exported file(s):"
     $ExportedPaths | ForEach-Object { Write-Host "  $_" }
 }
+
+exit $ExitCodes.Success

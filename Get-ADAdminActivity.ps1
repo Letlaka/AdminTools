@@ -1,4 +1,5 @@
 #requires -Version 5.1
+using module ./AdminToolsCommon.psm1
 <#
 .SYNOPSIS
     Reports Active Directory administrative activity from Domain Controller Security logs.
@@ -16,6 +17,12 @@
 
     Optional: ActiveDirectory PowerShell module is used to discover DCs and
     current privileged group members.
+
+    IMPORTANT: -AdminOnly uses current group membership at the time the script
+    runs. It does not reconstruct historical membership. Events performed by
+    accounts that were privileged at the time but have since been removed from
+    privileged groups will be excluded. Events performed by accounts that were
+    promoted after the event occurred will be included.
 
 .PARAMETER AllowPartialResults
     Export results even if one or more Domain Controllers could not be queried.
@@ -52,16 +59,7 @@ param(
 
     [string[]]$AdminSamAccountNames,
 
-    [string[]]$PrivilegedGroupNames = @(
-        "Domain Admins",
-        "Enterprise Admins",
-        "Schema Admins",
-        "Administrators",
-        "Account Operators",
-        "Server Operators",
-        "Backup Operators",
-        "Group Policy Creator Owners"
-    ),
+    [string[]]$PrivilegedGroupNames = (Get-DefaultPrivilegedGroupNames),
 
     [string]$OutputCsv,
 
@@ -86,8 +84,19 @@ param(
     [switch]$DisableCsvSanitization
 )
 
+Import-Module (Join-Path $PSScriptRoot "AdminToolsCommon.psm1") -Force -ErrorAction Stop
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+$ExitCodes = @{
+    Success    = 0
+    General    = 1
+    Prereq     = 2
+    Validation = 4
+    ADQuery    = 5
+    Export     = 7
+}
 
 $SecurityAuditProviderName = "Microsoft-Windows-Security-Auditing"
 $StartTime = (Get-Date).AddDays(-1 * $DaysBack)
@@ -192,66 +201,6 @@ $EventActionMap = @{
     5138 = "Directory object undeleted"
     5139 = "Directory object moved"
     5141 = "Directory object deleted"
-}
-
-function Test-IsTrustedActiveDirectoryModulePath {
-    param(
-        [string]$Path
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Path) -or [string]::IsNullOrWhiteSpace($env:WINDIR)) {
-        return $false
-    }
-
-    $windowsRoot = (Join-Path -Path $env:WINDIR -ChildPath "System32\WindowsPowerShell\v1.0\Modules\ActiveDirectory").TrimEnd('\')
-    $modulePath = $Path.TrimEnd('\')
-
-    return (
-        $modulePath.Equals($windowsRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
-        $modulePath.StartsWith("$windowsRoot\", [System.StringComparison]::OrdinalIgnoreCase)
-    )
-}
-
-function Import-ActiveDirectoryModule {
-    $LoadedModules = @(Get-Module -Name ActiveDirectory -ErrorAction SilentlyContinue)
-    if ($LoadedModules.Count -gt 0) {
-        foreach ($LoadedModule in $LoadedModules) {
-            if (-not (Test-IsTrustedActiveDirectoryModulePath -Path $LoadedModule.ModuleBase)) {
-                Write-Warning "ActiveDirectory module is already loaded from an untrusted path: $($LoadedModule.ModuleBase)"
-                return $false
-            }
-        }
-
-        return $true
-    }
-
-    $TrustedModule = @(Get-Module -ListAvailable -Name ActiveDirectory -ErrorAction SilentlyContinue |
-            Where-Object { Test-IsTrustedActiveDirectoryModulePath -Path $_.ModuleBase } |
-            Sort-Object -Property Version -Descending |
-            Select-Object -First 1)
-
-    if ($TrustedModule.Count -eq 0) {
-        Write-Warning "Trusted ActiveDirectory module could not be found in the Windows RSAT module path."
-        return $false
-    }
-
-    try {
-        $ModuleSpecification = @{
-            ModuleName    = "ActiveDirectory"
-            ModuleVersion = $TrustedModule[0].Version
-        }
-
-        if ($TrustedModule[0].Guid -and $TrustedModule[0].Guid -ne [guid]::Empty) {
-            $ModuleSpecification["Guid"] = $TrustedModule[0].Guid
-        }
-
-        Import-Module -FullyQualifiedName $ModuleSpecification -ErrorAction Stop
-        return $true
-    }
-    catch {
-        Write-Warning "ActiveDirectory module could not be loaded from trusted path '$($TrustedModule[0].ModuleBase)'. Error: $($_.Exception.Message)"
-        return $false
-    }
 }
 
 function Get-DomainControllerNames {
@@ -360,70 +309,6 @@ function Get-CurrentPrivilegedAdminNames {
     return $AdminNameSet
 }
 
-function ConvertTo-EventDataMap {
-    param(
-        [System.Diagnostics.Eventing.Reader.EventRecord]$EventRecord
-    )
-
-    [xml]$EventXml = $EventRecord.ToXml()
-    $EventDataMap = @{}
-
-    foreach ($DataElement in $EventXml.Event.EventData.Data) {
-        if ($null -ne $DataElement.Name) {
-            $EventDataMap[$DataElement.Name] = [string]$DataElement.'#text'
-        }
-    }
-
-    return $EventDataMap
-}
-
-function Join-DomainAccount {
-    param(
-        [string]$DomainName,
-        [string]$AccountName
-    )
-
-    if ([string]::IsNullOrWhiteSpace($AccountName) -or $AccountName -eq "-") {
-        return $null
-    }
-
-    if ([string]::IsNullOrWhiteSpace($DomainName) -or $DomainName -eq "-") {
-        return $AccountName
-    }
-
-    return "$DomainName\$AccountName"
-}
-
-function Get-MapValue {
-    param(
-        [hashtable]$Map,
-        [string]$Key
-    )
-
-    if ($Map.ContainsKey($Key)) {
-        return $Map[$Key]
-    }
-
-    return $null
-}
-
-function Limit-TextLength {
-    param(
-        [string]$Text,
-        [int]$MaximumLength
-    )
-
-    if ([string]::IsNullOrEmpty($Text)) {
-        return $Text
-    }
-
-    if ($Text.Length -le $MaximumLength) {
-        return $Text
-    }
-
-    return $Text.Substring(0, $MaximumLength) + "...[truncated]"
-}
-
 function Get-ResolvedOutputPath {
     param(
         [string]$Path
@@ -438,104 +323,6 @@ function Get-ResolvedOutputPath {
     }
 
     return (Join-Path -Path (Get-Location).Path -ChildPath $Path)
-}
-
-function Test-IsUncPath {
-    param(
-        [string]$Path
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Path)) {
-        return $false
-    }
-
-    try {
-        $uri = [System.Uri]$Path
-        return $uri.IsUnc
-    }
-    catch {
-        return $Path.StartsWith("\\", [System.StringComparison]::Ordinal)
-    }
-}
-
-function Test-IsSafeDnsName {
-    param(
-        [Parameter(Mandatory = $false)]
-        [string]$Name
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Name) -or $Name.Length -gt 253) {
-        return $false
-    }
-
-    if ($Name.StartsWith(".") -or $Name.EndsWith(".")) {
-        return $false
-    }
-
-    foreach ($label in $Name.Split(".")) {
-        if ([string]::IsNullOrWhiteSpace($label) -or $label.Length -gt 63) {
-            return $false
-        }
-
-        if ($label -notmatch '^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$') {
-            return $false
-        }
-    }
-
-    return $true
-}
-
-function Assert-SafeDomainControllerNames {
-    param(
-        [string[]]$Names
-    )
-
-    foreach ($Name in @($Names)) {
-        if ([string]::IsNullOrWhiteSpace($Name)) {
-            continue
-        }
-
-        if (-not (Test-IsSafeDnsName -Name $Name)) {
-            throw "DomainControllers contains an invalid DNS name: $Name"
-        }
-    }
-}
-
-function Test-ContainsControlCharacter {
-    param(
-        [Parameter(Mandatory = $false)]
-        [AllowNull()]
-        [string]$Value
-    )
-
-    return ($null -ne $Value -and $Value -match '[\x00-\x1F\x7F]')
-}
-
-function Assert-SafeTextValues {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Purpose,
-
-        [Parameter(Mandatory = $false)]
-        [AllowNull()]
-        [string[]]$Values,
-
-        [int]$MaximumLength = 4096
-    )
-
-    foreach ($Value in @($Values)) {
-        if ([string]::IsNullOrWhiteSpace($Value)) {
-            continue
-        }
-
-        if ($Value.Length -gt $MaximumLength) {
-            throw "$Purpose value exceeds maximum length $MaximumLength."
-        }
-
-        if (Test-ContainsControlCharacter -Value $Value) {
-            throw "$Purpose contains control characters and was rejected."
-        }
-    }
 }
 
 function Test-IsCsvPath {
@@ -560,158 +347,6 @@ function Write-SensitiveOutputWarning {
 
     if (-not [string]::IsNullOrWhiteSpace($Path)) {
         Write-Verbose "Sensitive report output path: $Path"
-    }
-}
-
-function ConvertTo-SafeCsvValue {
-    param(
-        [AllowNull()]
-        [object]$Value
-    )
-
-    if ($null -eq $Value -or -not ($Value -is [string])) {
-        return $Value
-    }
-
-    if ($Value -match '^[\t\r\n]' -or $Value -match '^\s*[=+\-@]') {
-        return "'$Value"
-    }
-
-    return $Value
-}
-
-function ConvertTo-SafeCsvRecord {
-    param(
-        [Parameter(ValueFromPipeline = $true)]
-        [psobject]$InputObject
-    )
-
-    process {
-        $Properties = [ordered]@{}
-
-        foreach ($Property in $InputObject.PSObject.Properties) {
-            $Properties[$Property.Name] = ConvertTo-SafeCsvValue -Value $Property.Value
-        }
-
-        [pscustomobject]$Properties
-    }
-}
-
-function Split-CredentialUserName {
-    param(
-        [PSCredential]$Credential
-    )
-
-    $UserName = $Credential.UserName
-
-    if ($UserName -match '\\') {
-        $Parts = $UserName.Split('\', 2)
-        return [pscustomobject]@{
-            Domain = $Parts[0]
-            User   = $Parts[1]
-        }
-    }
-
-    return [pscustomobject]@{
-        Domain = $null
-        User   = $UserName
-    }
-}
-
-function New-SecurityEventXPathQuery {
-    param(
-        [int[]]$Ids,
-        [string]$ProviderName,
-        [datetime]$StartDate
-    )
-
-    $EventIdFilter = (($Ids | ForEach-Object { "EventID=$_" }) -join " or ")
-    $StartUtc = $StartDate.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffffffZ", [System.Globalization.CultureInfo]::InvariantCulture)
-
-    return "*[System[Provider[@Name='$ProviderName'] and ($EventIdFilter) and TimeCreated[@SystemTime >= '$StartUtc']]]"
-}
-
-function Get-SecurityAuditEvents {
-    param(
-        [string]$ComputerName,
-        [int[]]$Ids,
-        [string]$ProviderName,
-        [datetime]$StartDate,
-        [int]$MaxEvents,
-        [PSCredential]$Credential
-    )
-
-    if (-not $Credential) {
-        $GetWinEventParameters = @{
-            ComputerName   = $ComputerName
-            FilterHashtable = @{
-                LogName      = "Security"
-                ProviderName = $ProviderName
-                Id           = $Ids
-                StartTime    = $StartDate
-            }
-            ErrorAction    = "Stop"
-        }
-
-        if ($MaxEvents -gt 0) {
-            $GetWinEventParameters["MaxEvents"] = $MaxEvents
-        }
-
-        return @(Get-WinEvent @GetWinEventParameters)
-    }
-
-    $CredentialName = Split-CredentialUserName -Credential $Credential
-    $Session = $null
-    $Reader = $null
-
-    try {
-        $Session = [System.Diagnostics.Eventing.Reader.EventLogSession]::new(
-            $ComputerName,
-            $CredentialName.Domain,
-            $CredentialName.User,
-            $Credential.Password,
-            [System.Diagnostics.Eventing.Reader.SessionAuthentication]::Default
-        )
-
-        $XPathQuery = New-SecurityEventXPathQuery `
-            -Ids $Ids `
-            -ProviderName $ProviderName `
-            -StartDate $StartDate
-
-        $Query = [System.Diagnostics.Eventing.Reader.EventLogQuery]::new(
-            "Security",
-            [System.Diagnostics.Eventing.Reader.PathType]::LogName,
-            $XPathQuery
-        )
-        $Query.Session = $Session
-        $Query.ReverseDirection = $true
-
-        $Reader = [System.Diagnostics.Eventing.Reader.EventLogReader]::new($Query)
-        $Events = New-Object System.Collections.Generic.List[object]
-
-        while ($true) {
-            $Event = $Reader.ReadEvent()
-            if ($null -eq $Event) {
-                break
-            }
-
-            [void]$Events.Add($Event)
-
-            if ($MaxEvents -gt 0 -and $Events.Count -ge $MaxEvents) {
-                break
-            }
-        }
-
-        return @($Events.ToArray())
-    }
-    finally {
-        if ($null -ne $Reader) {
-            $Reader.Dispose()
-        }
-
-        if ($null -ne $Session) {
-            $Session.Dispose()
-        }
     }
 }
 
@@ -799,10 +434,16 @@ $ResolvedDomainControllers = Get-DomainControllerNames `
     -AllowUnverified:$AllowUnverifiedDomainController `
     -Credential $Credential
 
+if (@($ResolvedDomainControllers).Count -eq 0) {
+    throw "No writable Domain Controllers were found. Verify AD connectivity and that the account has permission to enumerate domain controllers."
+}
+
 $CurrentAdminNames = [System.Collections.Generic.HashSet[string]]::new(
     [System.StringComparer]::OrdinalIgnoreCase
 )
 
+# Resolves current group membership. See NOTES in .DESCRIPTION: this is a
+# point-in-time snapshot, not a historical reconstruction.
 if ($AdminOnly) {
     $CurrentAdminNames = Get-CurrentPrivilegedAdminNames `
         -GroupNames $PrivilegedGroupNames `
@@ -814,6 +455,10 @@ if ($AdminOnly) {
     }
 }
 
+if ($AdminOnly -and $MaxEventsPerDomainController -gt 0) {
+    Write-Warning "AdminOnly filtering is applied after MaxEventsPerDomainController cap. Set MaxEventsPerDomainController to 0 to ensure all relevant events are considered."
+}
+
 $SuccessfulDomainControllers = New-Object System.Collections.Generic.List[string]
 $FailedDomainControllers = New-Object System.Collections.Generic.List[object]
 
@@ -821,6 +466,12 @@ $AllRecords = foreach ($DomainController in $ResolvedDomainControllers) {
     Write-Verbose "Reading Security log from $DomainController from $StartTime"
 
     try {
+        # NOTE: MaxEventsPerDomainController caps the raw event pull before
+        # per-user filtering is applied. If this limit is set very low and
+        # the target user's events are not among the first N events returned,
+        # they will be silently omitted. Set MaxEventsPerDomainController to
+        # 0 (no limit) when querying for a specific user or when using
+        # AdminOnly to ensure complete results.
         $SecurityEvents = Get-SecurityAuditEvents `
             -ComputerName $DomainController `
             -Ids $EventIds `
@@ -829,33 +480,34 @@ $AllRecords = foreach ($DomainController in $ResolvedDomainControllers) {
             -MaxEvents $MaxEventsPerDomainController `
             -Credential $Credential
 
-        $DomainControllerRecords = @($SecurityEvents | ForEach-Object {
-            $ActivityRecord = ConvertTo-AdActivityRecord `
+        $RawRecords = @($SecurityEvents | ForEach-Object {
+            ConvertTo-AdActivityRecord `
                 -EventRecord $_ `
                 -DomainController $DomainController `
                 -IncludeRenderedMessage:$IncludeMessage `
                 -AttributeValueLimit $MaxAttributeValueLength
+        })
 
-            if ($AdminOnly) {
-                $ActorMatchedAdmin = $false
+        $DomainControllerRecords = if ($AdminOnly) {
+            @($RawRecords | Where-Object {
+                $Record = $_
+                $Matched = $false
                 foreach ($ActorIdentifier in @(
-                        $ActivityRecord.ActorSamAccountName,
-                        $ActivityRecord.ActorAccount,
-                        $ActivityRecord.ActorSid
+                        $Record.ActorSamAccountName,
+                        $Record.ActorAccount,
+                        $Record.ActorSid
                     )) {
-                    if (-not [string]::IsNullOrWhiteSpace([string]$ActorIdentifier) -and $CurrentAdminNames.Contains([string]$ActorIdentifier)) {
-                        $ActorMatchedAdmin = $true
+                    if (-not [string]::IsNullOrWhiteSpace([string]$ActorIdentifier) -and
+                        $CurrentAdminNames.Contains([string]$ActorIdentifier)) {
+                        $Matched = $true
                         break
                     }
                 }
-
-                if (-not $ActorMatchedAdmin) {
-                    return
-                }
-            }
-
-            $ActivityRecord
-        })
+                $Matched
+            })
+        } else {
+            $RawRecords
+        }
 
         [void]$SuccessfulDomainControllers.Add($DomainController)
         $DomainControllerRecords
@@ -924,8 +576,14 @@ if ($OutputCsv) {
         @($SortedRecords | ConvertTo-SafeCsvRecord)
     }
 
-    $CsvRecords | Export-Csv -LiteralPath $ResolvedOutputCsv -NoTypeInformation -Encoding UTF8
-    Write-Host "Report exported to: $ResolvedOutputCsv"
+    try {
+        $CsvRecords | Export-Csv -LiteralPath $ResolvedOutputCsv -NoTypeInformation -Encoding UTF8
+        Write-Host "Report exported to: $ResolvedOutputCsv"
+    }
+    catch {
+        Write-Error "Failed to export report to '$ResolvedOutputCsv': $($_.Exception.Message)"
+        exit $ExitCodes.Export
+    }
 }
 
 Write-Host ("Summary: queried {0} Domain Controller(s), succeeded {1}, failed {2}, exported {3} event record(s)." -f `
@@ -949,3 +607,5 @@ $SortedRecords |
         AttributeName,
         OperationType |
     Format-Table -AutoSize
+
+exit $ExitCodes.Success

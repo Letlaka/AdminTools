@@ -89,6 +89,7 @@ Reporting controls:
 - `-CompareWithPrevious`
 - `-OutputDirectory`
 - `-LogPath`
+- `-NoProgress` to suppress transient progress displays in unattended runs
 
 Safety controls:
 
@@ -133,6 +134,7 @@ Example full inventory config:
   "ResolveDns": true,
   "TestPorts": [445, 3389, 5985],
   "SummaryOnly": false,
+  "NoProgress": false,
   "NoClobber": true
 }
 ```
@@ -154,6 +156,7 @@ Example targeted diagnostic config:
   "RemoteInventory": true,
   "SeparateStatusExports": true,
   "InactiveDays": 90,
+  "NoProgress": true,
   "NoClobber": true
 }
 ```
@@ -162,6 +165,14 @@ Run with:
 
 ```powershell
 .\Scan-ADComputers.ps1 -ConfigPath ".\Scan-ADComputers.json"
+```
+
+Progress is enabled by default and shows live AD discovery, targeted
+connectivity and matching, record preparation, operational enrichment, and
+export status. For a scheduled or redirected run, suppress transient progress:
+
+```powershell
+.\Scan-ADComputers.ps1 -ComputerType Server -Mode Full -NoProgress
 ```
 
 ## Examples

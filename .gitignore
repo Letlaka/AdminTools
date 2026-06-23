@@ -1,0 +1,14 @@
+AdminTools-Fix-Plan.md
+# Generated manuals — run tools/New-AdminToolsManual.ps1 to regenerate
+manual/*.docx
+manual/*.html
+manual/AdminTools-Manual.md
+manual/Get-ADAdminActivity-Manual.md
+manual/Manage-ADUserAccounts-Manual.md
+manual/Scan-ADComputers-Manual.md
+workstations.txt
+.vscode/
+*.log
+*.csv
+*.html
+*.json

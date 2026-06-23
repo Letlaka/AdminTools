@@ -30,6 +30,7 @@
 | `SkipPing` | `switch` | Forces `TestMethod` to `None` |
 | `ConfigPath` | `string` | JSON config file path |
 | `LogPath` | `string` | Custom log file path |
+| `NoProgress` | `switch` | Suppresses transient progress displays for unattended runs |
 | `NoClobber` | `switch` | Fails if an output or log file already exists |
 | `ForceOverwrite` | `switch` | Overwrites existing output or log files |
 | `AllowNetworkOutputPath` | `switch` | Allows writing reports and logs to UNC paths |

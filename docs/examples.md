@@ -72,6 +72,15 @@
   -CompareWithPrevious "C:\Temp\ADReports\Servers_domain_local_20260501090000.csv"
 ```
 
+### Unattended Scan Without Progress
+
+```powershell
+.\Scan-ADComputers.ps1 `
+  -ComputerType Server `
+  -Mode Full `
+  -NoProgress
+```
+
 ### JSON Config
 
 `Scan-ADComputers.ps1` supports JSON config files.
@@ -84,6 +93,7 @@
   "OutputDirectory": ".\\Output\\TargetedServers",
   "ExportFormat": ["Csv", "Json", "Html"],
   "NoClobber": true,
+  "NoProgress": true,
   "TestMethod": "WinRM",
   "PingCount": 2,
   "ResolveDns": true,
