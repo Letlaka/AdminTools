@@ -255,7 +255,7 @@ function Get-DomainControllerNames {
         Select-Object -ExpandProperty HostName
 }
 
-function Get-CurrentPrivilegedAdminNames {
+function Get-CurrentPrivilegedAdminName {
     param(
         [string[]]$GroupNames,
         [string[]]$AdditionalAdminNames,
@@ -445,7 +445,7 @@ $CurrentAdminNames = [System.Collections.Generic.HashSet[string]]::new(
 # Resolves current group membership. See NOTES in .DESCRIPTION: this is a
 # point-in-time snapshot, not a historical reconstruction.
 if ($AdminOnly) {
-    $CurrentAdminNames = Get-CurrentPrivilegedAdminNames `
+    $CurrentAdminNames = Get-CurrentPrivilegedAdminName `
         -GroupNames $PrivilegedGroupNames `
         -AdditionalAdminNames $AdminSamAccountNames `
         -Credential $Credential

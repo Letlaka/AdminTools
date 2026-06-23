@@ -43,7 +43,9 @@ using module ./AdminToolsCommon.psm1
 .PARAMETER GenerateTemporaryPassword
     Generate a temporary password for -ResetPassword. The generated value is
     displayed only when -ShowGeneratedPassword is also supplied and is not
-    written to exported reports.
+    written to exported reports. The generated value exists briefly as plain
+    text so it can be displayed, then is intentionally converted using
+    ConvertTo-SecureString -AsPlainText -Force before it is sent to AD.
 
 .PARAMETER ShowGeneratedPassword
     Display a generated temporary password once in the console. This is required
@@ -948,11 +950,27 @@ function New-TemporaryPassword {
 }
 
 function Invoke-UserAccountResetAction {
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = "High")]
     param(
-        [psobject]$User
+        [Parameter(Mandatory = $true)]
+        [psobject]$User,
+
+        [switch]$UnlockAccount,
+
+        [switch]$EnableAccount,
+
+        [switch]$ResetUserPassword,
+
+        [switch]$RequireChangePasswordAtLogon,
+
+        [securestring]$Password,
+
+        [switch]$GeneratePassword,
+
+        [switch]$RevealGeneratedPassword
     )
 
-    if (-not ($Unlock -or $Enable -or $ResetPassword -or $ChangePasswordAtLogon)) {
+    if (-not ($UnlockAccount -or $EnableAccount -or $ResetUserPassword -or $RequireChangePasswordAtLogon)) {
         throw "Mode Reset requires at least one action: -Unlock, -Enable, -ResetPassword, or -ChangePasswordAtLogon."
     }
 
@@ -960,21 +978,21 @@ function Invoke-UserAccountResetAction {
     $ActionResults = New-Object System.Collections.Generic.List[object]
     $TemporaryPassword = $null
 
-    if ($ResetPassword) {
-        if ($GenerateTemporaryPassword -and $NewPassword) {
+    if ($ResetUserPassword) {
+        if ($GeneratePassword -and $Password) {
             throw "Use either -NewPassword or -GenerateTemporaryPassword, not both."
         }
 
-        if (-not $NewPassword -and -not $GenerateTemporaryPassword) {
+        if (-not $Password -and -not $GeneratePassword) {
             throw "ResetPassword requires -NewPassword or -GenerateTemporaryPassword."
         }
 
-        if ($GenerateTemporaryPassword -and -not $ShowGeneratedPassword) {
+        if ($GeneratePassword -and -not $RevealGeneratedPassword) {
             throw "GenerateTemporaryPassword requires -ShowGeneratedPassword so console password disclosure is explicit."
         }
     }
 
-    if ($Unlock) {
+    if ($UnlockAccount) {
         if ($PSCmdlet.ShouldProcess($User.SamAccountName, "Unlock AD user account")) {
             Unlock-ADAccount -Identity $User.DistinguishedName @AdCommandParameters
             [void]$ActionResults.Add([pscustomobject]@{
@@ -986,7 +1004,7 @@ function Invoke-UserAccountResetAction {
         }
     }
 
-    if ($Enable) {
+    if ($EnableAccount) {
         if ($PSCmdlet.ShouldProcess($User.SamAccountName, "Enable AD user account")) {
             Enable-ADAccount -Identity $User.DistinguishedName @AdCommandParameters
             [void]$ActionResults.Add([pscustomobject]@{
@@ -998,11 +1016,15 @@ function Invoke-UserAccountResetAction {
         }
     }
 
-    if ($ResetPassword) {
+    if ($ResetUserPassword) {
         if ($PSCmdlet.ShouldProcess($User.SamAccountName, "Reset AD user password")) {
-            $PasswordToSet = $NewPassword
-            if ($GenerateTemporaryPassword) {
+            $PasswordToSet = $Password
+            if ($GeneratePassword) {
                 $TemporaryPassword = New-TemporaryPassword
+
+                # This is the only intentional plain-text conversion. The value
+                # is generated locally, converted immediately for the AD cmdlet,
+                # and is never written to an exported report.
                 $PasswordToSet = ConvertTo-SecureString -String $TemporaryPassword -AsPlainText -Force
             }
 
@@ -1016,7 +1038,7 @@ function Invoke-UserAccountResetAction {
         }
     }
 
-    if ($ChangePasswordAtLogon) {
+    if ($RequireChangePasswordAtLogon) {
         if ($PSCmdlet.ShouldProcess($User.SamAccountName, "Require password change at next logon")) {
             Set-ADUser -Identity $User.DistinguishedName -ChangePasswordAtLogon $true @AdCommandParameters
             [void]$ActionResults.Add([pscustomobject]@{
@@ -1173,7 +1195,16 @@ switch ($Mode) {
         }
 
         $User = Resolve-ManagedADUser -UserIdentity $Identity
-        $ActionResults = Invoke-UserAccountResetAction -User $User
+        $ActionResults = Invoke-UserAccountResetAction `
+            -User $User `
+            -UnlockAccount:$Unlock `
+            -EnableAccount:$Enable `
+            -ResetUserPassword:$ResetPassword `
+            -RequireChangePasswordAtLogon:$ChangePasswordAtLogon `
+            -Password $NewPassword `
+            -GeneratePassword:$GenerateTemporaryPassword `
+            -RevealGeneratedPassword:$ShowGeneratedPassword `
+            -WhatIf:$WhatIfPreference
 
         foreach ($Path in (Export-AccountReport -ReportName "ResetActions" -Data $ActionResults -Formats $ExportFormat)) {
             [void]$ExportedPaths.Add($Path)
