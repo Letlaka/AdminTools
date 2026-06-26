@@ -76,6 +76,11 @@ using module ./AdminToolsCommon.psm1
     "",
     Justification = "These established internal helpers intentionally return collections; renaming them would add compatibility churn."
 )]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+    "PSAvoidUsingPlainTextForPassword",
+    "",
+    Justification = "CredentialSecretName is a SecretManagement lookup key and CredentialPath is a file path; neither parameter carries a password value."
+)]
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = "High")]
 param(
     [ValidateSet("Report", "UserAudit", "Reset", "LockedOut")]
@@ -1252,6 +1257,7 @@ if ($ExportedPaths.Count -gt 0) {
 }
 
 exit $ExitCodes.Success
+
 
 
 

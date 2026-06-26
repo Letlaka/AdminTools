@@ -60,6 +60,11 @@ using module ./AdminToolsCommon.psm1
     "",
     Justification = "Get-DomainControllerNames returns a collection and retains its established internal name."
 )]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+    "PSAvoidUsingPlainTextForPassword",
+    "",
+    Justification = "CredentialSecretName is a SecretManagement lookup key and CredentialPath is a file path; neither parameter carries a password value."
+)]
 [CmdletBinding()]
 param(
     [ValidateRange(1, 3650)]
@@ -628,6 +633,7 @@ $SortedRecords |
     Format-Table -AutoSize
 
 exit $ExitCodes.Success
+
 
 
 

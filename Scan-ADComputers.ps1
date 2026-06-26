@@ -128,6 +128,11 @@ using module ./AdminToolsCommon.psm1
     "",
     Justification = "Flagged names are parameters of nested functions declared inside each parallel runspace, not captured parent variables."
 )]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+    "PSAvoidUsingPlainTextForPassword",
+    "",
+    Justification = "CredentialSecretName is a SecretManagement lookup key and CredentialPath is a file path; neither parameter carries a password value."
+)]
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [Parameter(Mandatory = $false)]
@@ -641,7 +646,7 @@ function Complete-ScanProgress {
     Write-Progress -Id $Id -Activity $Activity -Completed
 }
 
-function Start-PerformanceStage {
+function Measure-PerformanceStage {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Name,
@@ -667,7 +672,7 @@ function Start-PerformanceStage {
     }
 }
 
-function Stop-PerformanceStage {
+function Complete-PerformanceStage {
     param(
         [Parameter(Mandatory = $true)]
         [psobject]$Stage,
@@ -1968,10 +1973,10 @@ function Invoke-OperationalEnrichment {
     $connectivityMethod = if ($RemoteInventory.IsPresent -and $TestMethod -eq "None") { "WinRM" } else { $TestMethod }
     if ($RemoteInventory.IsPresent -and $TestMethod -eq "None") { Write-AdminToolsLog -Message "Remote inventory requires connectivity gating; using WinRM reachability because TestMethod is None." -Level Warning }
 
-    if ($connectivityRequired) { $stage = Start-PerformanceStage -Name "OperationalConnectivity" -InputCount $workingRecords.Count -EffectiveThrottle $ConnectivityThrottleLimitEffective -Details "method=$connectivityMethod; timeout=$TimeoutSeconds"; $workingRecords = Invoke-ConnectivityEnrichment -Records $workingRecords -PerformConnectivityCheck:$true -Method $connectivityMethod -ThrottleLimitValue $ConnectivityThrottleLimitEffective; [void](Stop-PerformanceStage -Stage $stage -OutputCount $workingRecords.Count) }
-    if ($ResolveDns.IsPresent) { $stage = Start-PerformanceStage -Name "DnsResolution" -InputCount $workingRecords.Count -EffectiveThrottle $DnsThrottleLimitEffective -Details "timeout=$TimeoutSeconds"; $workingRecords = Invoke-DnsEnrichment -Records $workingRecords -ThrottleLimitValue $DnsThrottleLimitEffective; [void](Stop-PerformanceStage -Stage $stage -OutputCount $workingRecords.Count) }
-    if (@($TestPorts).Count -gt 0) { $stage = Start-PerformanceStage -Name "PortChecks" -InputCount $workingRecords.Count -EffectiveThrottle $PortThrottleLimitEffective -Details "ports=$([string]::Join(',', @($TestPorts))); timeout=$TimeoutSeconds"; $workingRecords = Invoke-PortEnrichment -Records $workingRecords -ThrottleLimitValue $PortThrottleLimitEffective; [void](Stop-PerformanceStage -Stage $stage -OutputCount $workingRecords.Count) }
-    if ($RemoteInventory.IsPresent) { $stage = Start-PerformanceStage -Name "RemoteInventory" -InputCount $workingRecords.Count -EffectiveThrottle $RemoteInventoryThrottleLimitEffective -Details "timeout=$TimeoutSeconds"; $workingRecords = Invoke-RemoteInventoryEnrichment -Records $workingRecords -ThrottleLimitValue $RemoteInventoryThrottleLimitEffective; [void](Stop-PerformanceStage -Stage $stage -OutputCount $workingRecords.Count) }
+    if ($connectivityRequired) { $stage = Measure-PerformanceStage -Name "OperationalConnectivity" -InputCount $workingRecords.Count -EffectiveThrottle $ConnectivityThrottleLimitEffective -Details "method=$connectivityMethod; timeout=$TimeoutSeconds"; $workingRecords = Invoke-ConnectivityEnrichment -Records $workingRecords -PerformConnectivityCheck:$true -Method $connectivityMethod -ThrottleLimitValue $ConnectivityThrottleLimitEffective; [void](Complete-PerformanceStage -Stage $stage -OutputCount $workingRecords.Count) }
+    if ($ResolveDns.IsPresent) { $stage = Measure-PerformanceStage -Name "DnsResolution" -InputCount $workingRecords.Count -EffectiveThrottle $DnsThrottleLimitEffective -Details "timeout=$TimeoutSeconds"; $workingRecords = Invoke-DnsEnrichment -Records $workingRecords -ThrottleLimitValue $DnsThrottleLimitEffective; [void](Complete-PerformanceStage -Stage $stage -OutputCount $workingRecords.Count) }
+    if (@($TestPorts).Count -gt 0) { $stage = Measure-PerformanceStage -Name "PortChecks" -InputCount $workingRecords.Count -EffectiveThrottle $PortThrottleLimitEffective -Details "ports=$([string]::Join(',', @($TestPorts))); timeout=$TimeoutSeconds"; $workingRecords = Invoke-PortEnrichment -Records $workingRecords -ThrottleLimitValue $PortThrottleLimitEffective; [void](Complete-PerformanceStage -Stage $stage -OutputCount $workingRecords.Count) }
+    if ($RemoteInventory.IsPresent) { $stage = Measure-PerformanceStage -Name "RemoteInventory" -InputCount $workingRecords.Count -EffectiveThrottle $RemoteInventoryThrottleLimitEffective -Details "timeout=$TimeoutSeconds"; $workingRecords = Invoke-RemoteInventoryEnrichment -Records $workingRecords -ThrottleLimitValue $RemoteInventoryThrottleLimitEffective; [void](Complete-PerformanceStage -Stage $stage -OutputCount $workingRecords.Count) }
 
     Write-AdminToolsLog -Message ("Operational enrichment complete: {0} device record(s) processed." -f $workingRecords.Count) -Level Info
     return @($workingRecords)
@@ -2075,7 +2080,7 @@ function Invoke-AdComputerQuery {
     return @($allResults.ToArray())
 }
 
-$configAndValidationStage = Start-PerformanceStage -Name "ConfigAndValidation"
+$configAndValidationStage = Measure-PerformanceStage -Name "ConfigAndValidation"
 
 if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Resolve-ExistingPath -Path $ConfigPath -BaseDirectory $ScriptDirectory
@@ -2233,9 +2238,9 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
     Write-ErrorAndExit -Message "PowerShell 7 or greater is required." -CodeKey Prereq
 }
 
-[void](Stop-PerformanceStage -Stage $configAndValidationStage -Details "mode=$Mode; computerType=$ComputerType")
+[void](Complete-PerformanceStage -Stage $configAndValidationStage -Details "mode=$Mode; computerType=$ComputerType")
 
-$domainDiscoveryStage = Start-PerformanceStage -Name "DomainDiscovery"
+$domainDiscoveryStage = Measure-PerformanceStage -Name "DomainDiscovery"
 
 $Credential = Resolve-AdminToolsCredential -Credential $Credential -CredentialSecretName $CredentialSecretName -CredentialPath $CredentialPath -BaseDirectory $ScriptDirectory -AllowNetworkInputPath:$AllowNetworkInputPath
 
@@ -2271,7 +2276,7 @@ if ([string]::IsNullOrWhiteSpace($DomainController)) {
 
 Assert-SafeDnsName -Name $DomainName -Purpose "DomainName"
 Assert-SafeDnsName -Name $DomainController -Purpose "DomainController"
-[void](Stop-PerformanceStage -Stage $domainDiscoveryStage -OutputCount 1 -Details "domain=$DomainName; domainController=$DomainController")
+[void](Complete-PerformanceStage -Stage $domainDiscoveryStage -OutputCount 1 -Details "domain=$DomainName; domainController=$DomainController")
 
 $querySearchBases = @(Get-QuerySearchBases)
 $queryScopeDescription = if ($querySearchBases.Count -gt 0) {
@@ -2346,7 +2351,7 @@ $computers = @()
 $auditRecords = @()
 
 try {
-    $adDiscoveryStage = Start-PerformanceStage -Name "AdDiscovery" -Details "pageSize=$AdResultPageSize; searchScope=$AdSearchScope; queryScope=$queryScopeDescription"
+    $adDiscoveryStage = Measure-PerformanceStage -Name "AdDiscovery" -Details "pageSize=$AdResultPageSize; searchScope=$AdSearchScope; queryScope=$queryScopeDescription"
 
     if ($Mode -eq "Full") {
         Write-AdminToolsLog -Message "[MODE] Full AD inventory scan." -Level Info
@@ -2387,10 +2392,10 @@ try {
                 }
             )
 
-            $targetedConnectivityStage = Start-PerformanceStage -Name "TargetedConnectivity" -InputCount $connectivityTargets.Count -EffectiveThrottle (Get-EffectiveThrottleLimit -SpecificThrottleLimit $ConnectivityThrottleLimit -DefaultThrottleLimit $ThrottleLimit) -Details "method=$TestMethod; timeout=$TimeoutSeconds"
+            $targetedConnectivityStage = Measure-PerformanceStage -Name "TargetedConnectivity" -InputCount $connectivityTargets.Count -EffectiveThrottle (Get-EffectiveThrottleLimit -SpecificThrottleLimit $ConnectivityThrottleLimit -DefaultThrottleLimit $ThrottleLimit) -Details "method=$TestMethod; timeout=$TimeoutSeconds"
             $connectivityLookup = Get-ConnectivityLookup -TargetItems $connectivityTargets -Method $TestMethod -TimeoutSecondsValue $TimeoutSeconds -PingCountValue $PingCount -ThrottleLimitValue (Get-EffectiveThrottleLimit -SpecificThrottleLimit $ConnectivityThrottleLimit -DefaultThrottleLimit $ThrottleLimit)
             $reachableCount = @($connectivityLookup.Values | Where-Object { $_.Reachable -eq $true }).Count
-            [void](Stop-PerformanceStage -Stage $targetedConnectivityStage -OutputCount $reachableCount)
+            [void](Complete-PerformanceStage -Stage $targetedConnectivityStage -OutputCount $reachableCount)
             Write-AdminToolsLog -Message ("Targeted connectivity complete: {0} of {1} target(s) reachable." -f $reachableCount, $requestedCount) -Level Info
         }
         else {
@@ -2401,7 +2406,7 @@ try {
         $matchedComputers = New-Object System.Collections.Generic.List[object]
         $auditList = New-Object System.Collections.Generic.List[object]
         $matchingActivity = "Matching targeted devices"
-        $targetedMatchingStage = Start-PerformanceStage -Name "TargetedMatching" -InputCount $requestedCount
+        $targetedMatchingStage = Measure-PerformanceStage -Name "TargetedMatching" -InputCount $requestedCount
 
         try {
             for ($index = 0; $index -lt $requestedComputers.Count; $index++) {
@@ -2492,11 +2497,11 @@ try {
         $foundInAdCount = ($auditRecords | Where-Object { $_.FoundInAD -eq $true }).Count
         $matchedCount = $computers.Count
         $skippedCount = ($auditRecords | Where-Object { -not $_.Exported }).Count
-        [void](Stop-PerformanceStage -Stage $targetedMatchingStage -OutputCount $matchedCount -Details "skipped=$skippedCount")
+        [void](Complete-PerformanceStage -Stage $targetedMatchingStage -OutputCount $matchedCount -Details "skipped=$skippedCount")
         Write-AdminToolsLog -Message ("Target matching complete: {0} of {1} requested device(s) selected for export." -f $matchedCount, $requestedCount) -Level Info
     }
 
-    [void](Stop-PerformanceStage -Stage $adDiscoveryStage -InputCount $requestedCount -OutputCount $computers.Count -Details "raw=$adReturnedCount; excludedByOu=$excludedByOuCount")
+    [void](Complete-PerformanceStage -Stage $adDiscoveryStage -InputCount $requestedCount -OutputCount $computers.Count -Details "raw=$adReturnedCount; excludedByOu=$excludedByOuCount")
 }
 catch {
     Write-ErrorAndExit -Message "Failed AD query: $($_.Exception.Message)" -CodeKey ADQuery
@@ -2539,7 +2544,7 @@ if ($computers.Count -eq 0) {
 
 $preparedRecordCount = 0
 $preparationActivity = "Preparing inventory records"
-$inventoryPreparationStage = Start-PerformanceStage -Name "InventoryPreparation" -InputCount $computers.Count
+$inventoryPreparationStage = Measure-PerformanceStage -Name "InventoryPreparation" -InputCount $computers.Count
 $staleComparisonTimestamp = $RunStartedAt
 try {
     $resultList = @(
@@ -2557,7 +2562,7 @@ try {
 finally {
     Complete-ScanProgress -Id 4 -Activity $preparationActivity
 }
-[void](Stop-PerformanceStage -Stage $inventoryPreparationStage -OutputCount $resultList.Count)
+[void](Complete-PerformanceStage -Stage $inventoryPreparationStage -OutputCount $resultList.Count)
 Write-AdminToolsLog -Message ("Record preparation complete: {0} device record(s) prepared." -f $resultList.Count) -Level Info
 
 if ($Mode -eq "Targeted" -and $resultList.Count -gt 0) {
@@ -2636,7 +2641,7 @@ if (-not [string]::IsNullOrWhiteSpace($CompareWithPrevious)) {
 }
 
 try {
-    $exportStage = Start-PerformanceStage -Name "Export" -InputCount $resultList.Count -Details "formats=$([string]::Join(',', @($ExportFormat)))"
+    $exportStage = Measure-PerformanceStage -Name "Export" -InputCount $resultList.Count -Details "formats=$([string]::Join(',', @($ExportFormat)))"
     if ($SummaryOnly.IsPresent) {
         [void](Export-DataSet -BasePath $summaryBasePath -Formats @($ExportFormat) -Data $summaryTotals -Title "$ComputerType Inventory Summary Totals")
         [void](Export-DataSet -BasePath $summaryBreakdownBasePath -Formats @($ExportFormat) -Data $summaryBreakdown -Title "$ComputerType Inventory Summary Breakdown")
@@ -2644,7 +2649,7 @@ try {
     else {
         [void](Export-DataSet -BasePath $inventoryBasePath -Formats @($ExportFormat) -Data $resultList -Title "$ComputerType Inventory")
     }
-    [void](Stop-PerformanceStage -Stage $exportStage -OutputCount $resultList.Count)
+    [void](Complete-PerformanceStage -Stage $exportStage -OutputCount $resultList.Count)
     [void](Export-PerformanceSummary -BasePath $performanceBasePath)
 }
 catch {
@@ -2672,6 +2677,8 @@ if (-not [string]::IsNullOrWhiteSpace($CompareWithPrevious)) {
 }
 
 exit 0
+
+
 
 
 

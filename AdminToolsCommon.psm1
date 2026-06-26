@@ -12,6 +12,11 @@
     "",
     Justification = "These established public helpers return or validate collections; renaming them would break callers."
 )]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+    "PSAvoidUsingPlainTextForPassword",
+    "",
+    Justification = "CredentialSecretName is a SecretManagement lookup key and CredentialPath is a file path; neither parameter carries a password value."
+)]
 param()
 
 Set-StrictMode -Version Latest
@@ -598,6 +603,7 @@ function Get-WithRetry {
 }
 
 Export-ModuleMember -Function *
+
 
 
 
