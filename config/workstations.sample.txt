@@ -1,0 +1,3 @@
+# Optional list of workstation names, one per line.
+WORKSTATION01
+WORKSTATION02

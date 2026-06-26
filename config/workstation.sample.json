@@ -1,0 +1,11 @@
+{
+  "CredentialSecretName": "ExampleADCredential",
+  "DomainController": "dc01.example.corp.local",
+  "ComputerType": "Workstation",
+  "Mode": "Full",
+  "ExportFormat": [
+    "Csv"
+  ],
+  "ResolveDns": true,
+  "RemoteInventory": false
+}

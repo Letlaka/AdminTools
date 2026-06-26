@@ -1,0 +1,3 @@
+# Optional list of server names, one per line.
+SERVER01
+SERVER02

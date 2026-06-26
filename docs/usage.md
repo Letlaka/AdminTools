@@ -143,10 +143,11 @@ Add operational validation:
   -SeparateStatusExports
 ```
 
-Use a JSON config file:
+Use a JSON config file. Start from the committed sample, then keep your local runtime file ignored by git:
 
 ```powershell
-.\Scan-ADComputers.ps1 -ConfigPath ".\Scan-ADComputers.json"
+Copy-Item config/server_config.sample.json config/server_config.json
+.\Scan-ADComputers.ps1 -ConfigPath ".\config\server_config.json"
 ```
 
 `Scan-ADComputers.ps1` is the only current script with native `-ConfigPath`

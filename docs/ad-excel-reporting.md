@@ -18,9 +18,15 @@ into Excel workbooks organized by financial year and department.
   - `config/dept_list.txt`
   - `config/dept_codes.txt`
 
-The two config files are intentionally environment-local. Create them before
-running the reporting script; they are ignored by git so site-specific
-department names and codes do not get committed.
+The runtime config files are intentionally environment-local and ignored by git
+so site-specific department names and codes do not get committed. Public sample
+files are committed under `config/*.sample.*`; copy them to the runtime names
+before running the reporting script:
+
+```powershell
+Copy-Item config/dept_list.sample.txt config/dept_list.txt
+Copy-Item config/dept_codes.sample.txt config/dept_codes.txt
+```
 
 ## Windows Version Tracking
 
@@ -107,7 +113,8 @@ chosen Python 3.13+ environment.
 
 ## Department Config Format
 
-`config/dept_list.txt` contains one department name per line:
+Start from `config/dept_list.sample.txt`, then save the local runtime file as
+`config/dept_list.txt`. It contains one department name per line:
 
 ```text
 Finance
@@ -115,7 +122,8 @@ Human Resources
 Information Technology
 ```
 
-`config/dept_codes.txt` maps department codes to department names:
+Start from `config/dept_codes.sample.txt`, then save the local runtime file as
+`config/dept_codes.txt`. It maps department codes to department names:
 
 ```text
 FIN=Finance
@@ -137,4 +145,3 @@ By default, Excel output is written under:
 ```text
 reports/<financial-year>/<run-date>/
 ```
-

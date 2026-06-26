@@ -53,7 +53,12 @@ Preview a user unlock:
 .\Manage-ADUserAccounts.ps1 -Mode Reset -Identity jsmith -Unlock -WhatIf
 ```
 
-Build Excel dashboards and department workbooks from `Scan-ADComputers` exports:
+Build Excel dashboards and department workbooks from `Scan-ADComputers` exports. The department config files are local runtime files; start from the committed samples:
+
+```powershell
+Copy-Item config/dept_list.sample.txt config/dept_list.txt
+Copy-Item config/dept_codes.sample.txt config/dept_codes.txt
+```
 
 ```powershell
 uv run python scripts/build_ad_excel_reports.py `
@@ -72,4 +77,3 @@ Regenerate the combined and script-specific manuals from the Markdown sources:
 ```
 
 For prerequisites, setup, and environment requirements, start with [Overview](docs/overview.md).
-

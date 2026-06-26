@@ -119,10 +119,12 @@ Output folders:
 - `departments`: one workbook folder per matched department
 - `logs`: `unmatched_devices.csv` for records that did not match a department
 
-The reporting utility requires environment-local department files:
+The reporting utility requires environment-local department runtime files:
 
-- `config/dept_list.txt`
-- `config/dept_codes.txt`
+- `config/dept_list.txt` copied from `config/dept_list.sample.txt`
+- `config/dept_codes.txt` copied from `config/dept_codes.sample.txt`
+
+The runtime files are ignored by git so public clones get the samples without receiving environment-specific department data.
 
 Excel detail sheets add normalized reporting fields near the front of each device record:
 

@@ -1,0 +1,19 @@
+{
+  "CredentialSecretName": "ExampleADCredential",
+  "DomainController": "dc01.example.corp.local",
+  "ComputerType": "Server",
+  "Mode": "Full",
+  "ExportFormat": [
+    "Csv",
+    "Html",
+    "Json"
+  ],
+  "TestMethod": "WinRM",
+  "TestPorts": [
+    445,
+    5985,
+    5986
+  ],
+  "ResolveDns": true,
+  "RemoteInventory": true
+}

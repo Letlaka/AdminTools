@@ -396,6 +396,73 @@ function New-ManualMarkdown {
     return $Content
 }
 
+function Resolve-LibreOfficeCommand {
+    $Command = Get-Command -Name "libreoffice" -ErrorAction SilentlyContinue
+    if ($Command) {
+        return $Command.Source
+    }
+
+    $Command = Get-Command -Name "soffice" -ErrorAction SilentlyContinue
+    if ($Command) {
+        return $Command.Source
+    }
+
+    $CandidatePaths = @(
+        $env:LIBREOFFICE_PATH,
+        (Join-Path -Path $env:ProgramFiles -ChildPath "LibreOffice\program\soffice.exe"),
+        (Join-Path -Path ${env:ProgramFiles(x86)} -ChildPath "LibreOffice\program\soffice.exe"),
+        (Join-Path -Path $env:LOCALAPPDATA -ChildPath "Programs\LibreOffice\program\soffice.exe")
+    )
+
+    foreach ($CandidatePath in $CandidatePaths) {
+        if (-not [string]::IsNullOrWhiteSpace($CandidatePath) -and (Test-Path -LiteralPath $CandidatePath -PathType Leaf)) {
+            return $CandidatePath
+        }
+    }
+
+    return $null
+}
+
+function Convert-ManualHtmlToDocxWithWord {
+    param(
+        [string]$HtmlPath,
+        [string]$DocxPath
+    )
+
+    if (-not $IsWindows -and $PSVersionTable.PSEdition -eq "Core") {
+        return $false
+    }
+
+    $Word = $null
+    $Document = $null
+
+    try {
+        $Word = New-Object -ComObject Word.Application -ErrorAction Stop
+        $Word.Visible = $false
+        $Document = $Word.Documents.Open((Resolve-Path -LiteralPath $HtmlPath).Path)
+
+        if (Test-Path -LiteralPath $DocxPath) {
+            Remove-Item -LiteralPath $DocxPath -Force
+        }
+
+        $Document.SaveAs([ref]$DocxPath, [ref]16)
+        return (Test-Path -LiteralPath $DocxPath)
+    }
+    catch {
+        return $false
+    }
+    finally {
+        if ($Document) {
+            $Document.Close([ref]$false) | Out-Null
+            [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Document) | Out-Null
+        }
+
+        if ($Word) {
+            $Word.Quit() | Out-Null
+            [System.Runtime.InteropServices.Marshal]::ReleaseComObject($Word) | Out-Null
+        }
+    }
+}
 function Convert-ManualHtmlToDocx {
     param(
         [string]$HtmlPath,
@@ -403,9 +470,9 @@ function Convert-ManualHtmlToDocx {
         [string]$OutputDirectory
     )
 
-    $LibreOffice = Get-Command -Name "libreoffice" -ErrorAction SilentlyContinue
+    $LibreOffice = Resolve-LibreOfficeCommand
     if (-not $LibreOffice) {
-        return $false
+        return Convert-ManualHtmlToDocxWithWord -HtmlPath $HtmlPath -DocxPath $DocxPath
     }
 
     $LibreOfficeProfile = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("admintools-lo-profile-" + [guid]::NewGuid().ToString("N"))
@@ -429,7 +496,7 @@ function Convert-ManualHtmlToDocx {
     )
 
     try {
-        & $LibreOffice.Source @LibreOfficeArguments | Out-Host
+        & $LibreOffice @LibreOfficeArguments | Out-Host
         return (Test-Path -LiteralPath $DocxPath)
     }
     finally {
@@ -488,7 +555,7 @@ Set-Content -LiteralPath $ManualMarkdown -Value $Markdown -Encoding UTF8
 Set-Content -LiteralPath $ManualHtml -Value (ConvertFrom-MarkdownToManualHtml -MarkdownLines $Markdown -GeneratedDate $GeneratedDate) -Encoding UTF8
 
 $CreatedDocxWithLibreOffice = $false
-$LibreOffice = Get-Command -Name "libreoffice" -ErrorAction SilentlyContinue
+$LibreOffice = Resolve-LibreOfficeCommand
 if ($LibreOffice) {
     $LibreOfficeProfile = Join-Path -Path ([System.IO.Path]::GetTempPath()) -ChildPath ("admintools-lo-profile-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Path $LibreOfficeProfile -Force | Out-Null
@@ -510,7 +577,7 @@ if ($LibreOffice) {
         $ManualHtml
     )
 
-    & $LibreOffice.Source @LibreOfficeArguments | Out-Host
+    & $LibreOffice @LibreOfficeArguments | Out-Host
     $CreatedDocxWithLibreOffice = Test-Path -LiteralPath $ManualDocx
 
     if (Test-Path -LiteralPath $LibreOfficeProfile) {

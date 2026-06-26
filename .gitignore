@@ -56,17 +56,14 @@ Thumbs.db
 desktop.ini
 
 # Environment-local AD reporting config
-config/dept_codes.txt
-config/dept_list.txt
-
-config/*.json
-
-# Local helper scripts / scratch data under config
-config/count_devices_per_department.py
-config/count_servers.py
+config/*
+!config/.gitignore
+!config/*.sample.txt
+!config/*.sample.json
 
 # Generated report output directories
-reports/
+reports/*
+!reports/.gitkeep
 logs/
 
 # Root-level Scan-ADComputers exports
@@ -86,5 +83,3 @@ manual/AdminTools-Manual.md
 manual/Get-ADAdminActivity-Manual.md
 manual/Manage-ADUserAccounts-Manual.md
 manual/Scan-ADComputers-Manual.md
-
-

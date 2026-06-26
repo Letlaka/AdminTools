@@ -129,7 +129,9 @@ Targeted FQDN entries must be under the discovered or supplied AD DNS suffix.
 ## JSON Config Support
 
 This script supports JSON config files with `-ConfigPath`. Explicit command-line
-parameters override values from the config file.
+parameters override values from the config file. Public samples are committed as
+`config/server_config.sample.json` and `config/workstation.sample.json`; copy a
+sample to an ignored runtime file before storing environment-specific values.
 
 Example full inventory config:
 
@@ -178,7 +180,8 @@ Example targeted diagnostic config:
 Run with:
 
 ```powershell
-.\Scan-ADComputers.ps1 -ConfigPath ".\Scan-ADComputers.json"
+Copy-Item config/server_config.sample.json config/server_config.json
+.\Scan-ADComputers.ps1 -ConfigPath ".\config\server_config.json"
 ```
 
 Progress is enabled by default and shows live AD discovery, targeted

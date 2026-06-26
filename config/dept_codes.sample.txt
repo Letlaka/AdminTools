@@ -1,0 +1,9 @@
+# Format: code : department name
+# Quotes keep multi-word names together.
+HEALTH : "Department of Health"
+EDU : "Education"
+SOCDEV : "Social Development"
+FIN : "Finance"
+IT : "Information Technology"
+HR : "Human Resources"
+OPS : "Operations"

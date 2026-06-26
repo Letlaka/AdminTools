@@ -1,0 +1,2 @@
+# Real local config belongs here and is intentionally ignored by the root .gitignore.
+# Copy the *.sample.* files to the expected runtime names and edit them for your environment.

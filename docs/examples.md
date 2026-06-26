@@ -109,7 +109,7 @@ Set-Secret -Name ExampleADCredential -Secret (Get-Credential)
 
 ### JSON Config
 
-`Scan-ADComputers.ps1` supports JSON config files.
+`Scan-ADComputers.ps1` supports JSON config files. Start from the committed sample and keep the runtime copy ignored by git:
 
 ```json
 {
@@ -135,7 +135,8 @@ Set-Secret -Name ExampleADCredential -Secret (Get-Credential)
 ```
 
 ```powershell
-.\Scan-ADComputers.ps1 -ConfigPath ".\Scan-ADComputers.json"
+Copy-Item config/server_config.sample.json config/server_config.json
+.\Scan-ADComputers.ps1 -ConfigPath ".\config\server_config.json"
 ```
 
 ## Get-ADAdminActivity.ps1
@@ -301,4 +302,3 @@ uv run python scripts/build_ad_excel_reports.py `
   --workstations reports/ad-computers/Workstations_example_corp_local_20260625.csv `
   --as-of-date 2026-06-25
 ```
-
