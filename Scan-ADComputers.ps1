@@ -72,6 +72,10 @@ using module ./AdminToolsCommon.psm1
 .PARAMETER SkipPing
     Backward-compatible shortcut that forces TestMethod to None.
 
+.PARAMETER CredentialSecretName
+    SecretManagement secret name containing a PSCredential.
+.PARAMETER CredentialPath
+    Path to a PSCredential exported with Export-Clixml. Credential files must be outside the repository directory.
 .PARAMETER ConfigPath
     Optional path to a Json configuration file.
 
@@ -144,6 +148,12 @@ param(
     [PSCredential]$Credential,
 
     [Parameter(Mandatory = $false)]
+    [string]$CredentialSecretName,
+
+    [Parameter(Mandatory = $false)]
+    [string]$CredentialPath,
+
+    [Parameter(Mandatory = $false)]
     [string]$ComputerListPath,
 
     [Parameter(Mandatory = $false)]
@@ -195,6 +205,37 @@ param(
     [Parameter(Mandatory = $false)]
     [ValidateRange(1, 128)]
     [int]$ThrottleLimit = 10,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateRange(0, 128)]
+    [int]$ConnectivityThrottleLimit = 0,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateRange(0, 128)]
+    [int]$DnsThrottleLimit = 0,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateRange(0, 128)]
+    [int]$PortThrottleLimit = 0,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateRange(0, 128)]
+    [int]$RemoteInventoryThrottleLimit = 0,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateRange(1, 100000)]
+    [int]$AdResultPageSize = 1000,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateSet("Base", "OneLevel", "Subtree")]
+    [string]$AdSearchScope = "Subtree",
+
+    [Parameter(Mandatory = $false)]
+    [ValidateRange(1, 1000)]
+    [int]$TargetedQueryChunkSize = 40,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$PerformanceSummary,
 
     [Parameter(Mandatory = $false)]
     [ValidateRange(1, 10)]
@@ -264,6 +305,7 @@ foreach ($key in $PSBoundParameters.Keys) {
 
 $script:LogFilePath = $null
 $script:FileLoggingEnabled = $false
+$script:PerformanceStages = New-Object 'System.Collections.Generic.List[object]'
 
 if ($ForceOverwrite -and $NoClobber) {
     Write-Error "ForceOverwrite and NoClobber cannot be used together."
@@ -597,6 +639,139 @@ function Complete-ScanProgress {
     }
 
     Write-Progress -Id $Id -Activity $Activity -Completed
+}
+
+function Start-PerformanceStage {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+
+        [Parameter(Mandatory = $false)]
+        [Nullable[int]]$InputCount = $null,
+
+        [Parameter(Mandatory = $false)]
+        [Nullable[int]]$EffectiveThrottle = $null,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Details = $null
+    )
+
+    [PSCustomObject]@{
+        Name              = $Name
+        Stopwatch         = [System.Diagnostics.Stopwatch]::StartNew()
+        StartedAt         = Get-Date
+        InputCount        = $InputCount
+        OutputCount       = $null
+        EffectiveThrottle = $EffectiveThrottle
+        Details           = $Details
+    }
+}
+
+function Stop-PerformanceStage {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$Stage,
+
+        [Parameter(Mandatory = $false)]
+        [Nullable[int]]$InputCount = $null,
+
+        [Parameter(Mandatory = $false)]
+        [Nullable[int]]$OutputCount = $null,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Details = $null
+    )
+
+    $Stage.Stopwatch.Stop()
+
+    if ($null -ne $InputCount) { $Stage.InputCount = $InputCount }
+    if ($null -ne $OutputCount) { $Stage.OutputCount = $OutputCount }
+    if (-not [string]::IsNullOrWhiteSpace($Details)) {
+        if ([string]::IsNullOrWhiteSpace([string]$Stage.Details)) { $Stage.Details = $Details } else { $Stage.Details = "{0}; {1}" -f $Stage.Details, $Details }
+    }
+
+    $entry = [PSCustomObject]@{
+        Stage             = [string]$Stage.Name
+        StartedAt         = $Stage.StartedAt
+        ElapsedMs         = [Math]::Round($Stage.Stopwatch.Elapsed.TotalMilliseconds, 2)
+        InputCount        = $Stage.InputCount
+        OutputCount       = $Stage.OutputCount
+        EffectiveThrottle = $Stage.EffectiveThrottle
+        Details           = $Stage.Details
+    }
+
+    [void]$script:PerformanceStages.Add($entry)
+    Write-AdminToolsLog -Message ("Stage {0}: {1} ms; input={2}; output={3}; throttle={4}; {5}" -f $entry.Stage, $entry.ElapsedMs, $(if ($null -eq $entry.InputCount) { "n/a" } else { $entry.InputCount }), $(if ($null -eq $entry.OutputCount) { "n/a" } else { $entry.OutputCount }), $(if ($null -eq $entry.EffectiveThrottle) { "n/a" } else { $entry.EffectiveThrottle }), $entry.Details) -Level Info
+
+    return $entry
+}
+
+function Export-PerformanceSummary {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BasePath
+    )
+
+    if (-not $PerformanceSummary.IsPresent) {
+        return @()
+    }
+
+    $records = @($script:PerformanceStages)
+    $exportedPaths = New-Object 'System.Collections.Generic.List[string]'
+
+    $csvPath = "$BasePath.csv"
+    Assert-OutputPathAllowed -Path $csvPath -Purpose "performance summary"
+    if ((Test-Path -LiteralPath $csvPath) -and $NoClobber -and -not $ForceOverwrite) {
+        Write-ErrorAndExit -Message "Performance summary already exists: $csvPath. Use -ForceOverwrite or remove -NoClobber." -CodeKey Export
+    }
+    $records | Export-Csv -LiteralPath $csvPath -NoTypeInformation
+    [void]$exportedPaths.Add($csvPath)
+
+    $jsonPath = "$BasePath.json"
+    Assert-OutputPathAllowed -Path $jsonPath -Purpose "performance summary"
+    if ((Test-Path -LiteralPath $jsonPath) -and $NoClobber -and -not $ForceOverwrite) {
+        Write-ErrorAndExit -Message "Performance summary already exists: $jsonPath. Use -ForceOverwrite or remove -NoClobber." -CodeKey Export
+    }
+    $records | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $jsonPath
+    [void]$exportedPaths.Add($jsonPath)
+
+    Write-AdminToolsLog -Message ("Exported performance summary: {0}" -f ([string]::Join(', ', $exportedPaths))) -Level Info
+    return @($exportedPaths)
+}
+
+function Get-EffectiveThrottleLimit {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$SpecificThrottleLimit,
+
+        [Parameter(Mandatory = $true)]
+        [int]$DefaultThrottleLimit
+    )
+
+    if ($SpecificThrottleLimit -gt 0) {
+        return $SpecificThrottleLimit
+    }
+
+    return $DefaultThrottleLimit
+}
+
+function Test-ShouldUpdateProgress {
+    param(
+        [Parameter(Mandatory = $true)]
+        [int]$CurrentCount,
+
+        [Parameter(Mandatory = $true)]
+        [int]$TotalCount,
+
+        [Parameter(Mandatory = $true)]
+        [int]$ProgressUpdateInterval
+    )
+
+    if ($CurrentCount -le 0) {
+        return $false
+    }
+
+    return (($CurrentCount % $ProgressUpdateInterval) -eq 0 -or $CurrentCount -ge $TotalCount)
 }
 
 function Initialize-LogFile {
@@ -1006,7 +1181,10 @@ function Get-StaleStatus {
         [Nullable[datetime]]$LastSeenDate,
 
         [Parameter(Mandatory = $false)]
-        [int]$ThresholdDays = 0
+        [int]$ThresholdDays = 0,
+
+        [Parameter(Mandatory = $true)]
+        [datetime]$ComparisonTimestamp
     )
 
     if ($ThresholdDays -le 0) {
@@ -1017,7 +1195,7 @@ function Get-StaleStatus {
         return "Unknown"
     }
 
-    $daysSinceLastSeen = [Math]::Floor(((Get-Date) - $LastSeenDate).TotalDays)
+    $daysSinceLastSeen = [Math]::Floor(($ComparisonTimestamp - $LastSeenDate).TotalDays)
     if ($daysSinceLastSeen -ge $ThresholdDays) {
         return "Stale"
     }
@@ -1034,17 +1212,23 @@ function Get-ComputerRecord {
         [string]$Type,
 
         [Parameter(Mandatory = $false)]
-        [int]$InactiveThresholdDays = 0
+        [int]$InactiveThresholdDays = 0,
+
+        [Parameter(Mandatory = $true)]
+        [datetime]$ScanTimestamp,
+
+        [Parameter(Mandatory = $true)]
+        [datetime]$StaleComparisonTimestamp
     )
 
     $lastSeenDate = Get-EffectiveLastSeenDate -Computer $Computer
     $daysSinceLastSeen = $null
 
     if ($null -ne $lastSeenDate) {
-        $daysSinceLastSeen = [Math]::Floor(((Get-Date) - $lastSeenDate).TotalDays)
+        $daysSinceLastSeen = [Math]::Floor(($StaleComparisonTimestamp - $lastSeenDate).TotalDays)
     }
 
-    $staleStatus = Get-StaleStatus -LastSeenDate $lastSeenDate -ThresholdDays $InactiveThresholdDays
+    $staleStatus = Get-StaleStatus -LastSeenDate $lastSeenDate -ThresholdDays $InactiveThresholdDays -ComparisonTimestamp $StaleComparisonTimestamp
     $isStale = if ($InactiveThresholdDays -gt 0) { $staleStatus -eq "Stale" } else { $null }
 
     [PSCustomObject]@{
@@ -1085,7 +1269,7 @@ function Get-ComputerRecord {
         SystemDriveFreeGB      = $null
         PendingReboot          = $null
         LoggedOnUser           = $null
-        QueriedAt              = $RunStartedAt
+        QueriedAt              = $ScanTimestamp
     }
 }
 
@@ -1530,61 +1714,151 @@ function Get-ConnectivityLookup {
     return $lookup
 }
 
-function Invoke-OperationalEnrichment {
+function Invoke-ConnectivityEnrichment {
     param(
-        [Parameter(Mandatory = $true)]
-        [object[]]$Records,
-
-        [Parameter(Mandatory = $true)]
-        [bool]$PerformConnectivityCheck
+        [Parameter(Mandatory = $true)] [object[]]$Records,
+        [Parameter(Mandatory = $true)] [bool]$PerformConnectivityCheck,
+        [Parameter(Mandatory = $true)] [ValidateSet("Ping", "WinRM", "None")] [string]$Method,
+        [Parameter(Mandatory = $true)] [int]$ThrottleLimitValue
     )
 
-    if (@($Records).Count -eq 0) {
-        return @()
-    }
+    if (-not $PerformConnectivityCheck -or @($Records).Count -eq 0) { return @($Records) }
 
-    $needsEnrichment = $PerformConnectivityCheck -or $ResolveDns.IsPresent -or @($TestPorts).Count -gt 0 -or $RemoteInventory.IsPresent
-    if (-not $needsEnrichment) {
-        return @($Records)
-    }
-
-    $indexedRecords = for ($index = 0; $index -lt $Records.Count; $index++) {
-        [PSCustomObject]@{
-            Index  = $index
-            Record = $Records[$index]
-        }
-    }
-
+    $indexedRecords = for ($index = 0; $index -lt $Records.Count; $index++) { [PSCustomObject]@{ Index = $index; Record = $Records[$index] } }
     $completedRecords = 0
-    $progressActivity = "Running operational enrichment"
+    $progressActivity = "Running operational connectivity"
 
     try {
         $results = @($indexedRecords | ForEach-Object -Parallel {
             function Test-TcpPort {
-                param(
-                    [string]$ComputerName,
-                    [int]$Port,
-                    [int]$TimeoutSeconds
-                )
-
+                param([string]$ComputerName, [int]$Port, [int]$TimeoutSeconds)
                 $client = [System.Net.Sockets.TcpClient]::new()
-
                 try {
                     $task = $client.ConnectAsync($ComputerName, $Port)
-                    if (-not $task.Wait([TimeSpan]::FromSeconds($TimeoutSeconds))) {
-                        return $false
-                    }
-
+                    if (-not $task.Wait([TimeSpan]::FromSeconds($TimeoutSeconds))) { return $false }
                     return $client.Connected
                 }
-                catch {
-                    return $false
+                catch { return $false }
+                finally { $client.Dispose() }
+            }
+
+            $wrapper = $_
+            $record = $wrapper.Record
+            $resultProperties = [ordered]@{}
+            foreach ($property in $record.PSObject.Properties) { $resultProperties[$property.Name] = $property.Value }
+            $targetName = if (-not [string]::IsNullOrWhiteSpace([string]$record.DNSHostName)) { [string]$record.DNSHostName } elseif (-not [string]::IsNullOrWhiteSpace([string]$record.CN) -and -not [string]::IsNullOrWhiteSpace([string]$using:DomainName)) { "{0}.{1}" -f $record.CN, $using:DomainName } else { [string]$record.CN }
+
+            $resultProperties["ConnectivityMethod"] = $using:Method
+            $resultProperties["ConnectivityStatus"] = "NotRequested"
+            $resultProperties["ConnectivityReachable"] = $null
+            $resultProperties["ConnectivityDetail"] = $null
+
+            switch ($using:Method) {
+                "None" {
+                    $resultProperties["ConnectivityStatus"] = "Skipped"
+                    $resultProperties["ConnectivityDetail"] = "Connectivity check skipped."
                 }
-                finally {
-                    $client.Dispose()
+                "Ping" {
+                    try {
+                        $pingResult = Test-Connection -TargetName $targetName -Count $using:PingCount -Quiet -TimeoutSeconds $using:TimeoutSeconds -ErrorAction SilentlyContinue
+                        $reachable = if ($pingResult -is [System.Array]) { $pingResult -contains $true } else { [bool]$pingResult }
+                    }
+                    catch { $reachable = $false }
+                    $resultProperties["ConnectivityReachable"] = $reachable
+                    $resultProperties["ConnectivityStatus"] = if ($reachable) { "Reachable" } else { "Unreachable" }
+                    $resultProperties["ConnectivityDetail"] = "ICMP ping check."
+                }
+                "WinRM" {
+                    $openPorts = New-Object System.Collections.Generic.List[string]
+                    foreach ($winRmPort in 5985, 5986) {
+                        if (Test-TcpPort -ComputerName $targetName -Port $winRmPort -TimeoutSeconds $using:TimeoutSeconds) { $openPorts.Add([string]$winRmPort) }
+                    }
+                    $reachable = $openPorts.Count -gt 0
+                    $resultProperties["ConnectivityReachable"] = $reachable
+                    $resultProperties["ConnectivityStatus"] = if ($reachable) { "Reachable" } else { "Unreachable" }
+                    $resultProperties["ConnectivityDetail"] = if ($reachable) { "Open WinRM ports: $([string]::Join(',', $openPorts))" } else { "WinRM ports 5985/5986 unavailable." }
                 }
             }
 
+            [PSCustomObject]@{ Index = $wrapper.Index; Record = [PSCustomObject]$resultProperties }
+        } -ThrottleLimit $ThrottleLimitValue | ForEach-Object {
+            $completedRecords++
+            if (Test-ShouldUpdateProgress -CurrentCount $completedRecords -TotalCount $Records.Count -ProgressUpdateInterval 100) { Write-ScanProgress -Id 5 -Activity $progressActivity -Status ("Completed {0} of {1} device(s)" -f $completedRecords, $Records.Count) -CompletedCount $completedRecords -TotalCount $Records.Count }
+            $_
+        })
+    }
+    finally { Complete-ScanProgress -Id 5 -Activity $progressActivity }
+
+    Write-AdminToolsLog -Message ("Operational connectivity complete: {0} device record(s) processed." -f $results.Count) -Level Info
+    return @($results | Sort-Object -Property Index | ForEach-Object { $_.Record })
+}
+
+function Invoke-DnsEnrichment {
+    param([Parameter(Mandatory = $true)] [object[]]$Records, [Parameter(Mandatory = $true)] [int]$ThrottleLimitValue)
+    if (-not $ResolveDns.IsPresent -or @($Records).Count -eq 0) { return @($Records) }
+    $indexedRecords = for ($index = 0; $index -lt $Records.Count; $index++) { [PSCustomObject]@{ Index = $index; Record = $Records[$index] } }
+    $completedRecords = 0
+    $progressActivity = "Resolving DNS records"
+    try {
+        $results = @($indexedRecords | ForEach-Object -Parallel {
+            $wrapper = $_
+            $record = $wrapper.Record
+            $resultProperties = [ordered]@{}
+            foreach ($property in $record.PSObject.Properties) { $resultProperties[$property.Name] = $property.Value }
+            $targetName = if (-not [string]::IsNullOrWhiteSpace([string]$record.DNSHostName)) { [string]$record.DNSHostName } elseif (-not [string]::IsNullOrWhiteSpace([string]$record.CN) -and -not [string]::IsNullOrWhiteSpace([string]$using:DomainName)) { "{0}.{1}" -f $record.CN, $using:DomainName } else { [string]$record.CN }
+            if ([string]::IsNullOrWhiteSpace($targetName)) {
+                $resultProperties["DnsStatus"] = "NoTarget"; $resultProperties["DnsResolvedIPs"] = $null; $resultProperties["DnsMatchesAdIPv4"] = $null
+            }
+            else {
+                try {
+                    $dnsResults = @(Resolve-DnsName -Name $targetName -Type A -ErrorAction Stop | Where-Object { $_.IPAddress } | Select-Object -ExpandProperty IPAddress -Unique)
+                    $resultProperties["DnsStatus"] = if ($dnsResults.Count -gt 0) { "Resolved" } else { "NoARecord" }
+                    $resultProperties["DnsResolvedIPs"] = ($dnsResults -join ",")
+                    $adIps = @([string]$record.IPv4Address -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                    $resultProperties["DnsMatchesAdIPv4"] = if ($dnsResults.Count -gt 0 -and $adIps.Count -gt 0) { @($dnsResults | Where-Object { $adIps -contains $_ }).Count -gt 0 } else { $null }
+                }
+                catch { $resultProperties["DnsStatus"] = "Failed"; $resultProperties["DnsResolvedIPs"] = $null; $resultProperties["DnsMatchesAdIPv4"] = $null }
+            }
+            [PSCustomObject]@{ Index = $wrapper.Index; Record = [PSCustomObject]$resultProperties }
+        } -ThrottleLimit $ThrottleLimitValue | ForEach-Object { $completedRecords++; if (Test-ShouldUpdateProgress -CurrentCount $completedRecords -TotalCount $Records.Count -ProgressUpdateInterval 100) { Write-ScanProgress -Id 5 -Activity $progressActivity -Status ("Completed {0} of {1} device(s)" -f $completedRecords, $Records.Count) -CompletedCount $completedRecords -TotalCount $Records.Count }; $_ })
+    }
+    finally { Complete-ScanProgress -Id 5 -Activity $progressActivity }
+    Write-AdminToolsLog -Message ("DNS resolution complete: {0} device record(s) processed." -f $results.Count) -Level Info
+    return @($results | Sort-Object -Property Index | ForEach-Object { $_.Record })
+}
+
+function Invoke-PortEnrichment {
+    param([Parameter(Mandatory = $true)] [object[]]$Records, [Parameter(Mandatory = $true)] [int]$ThrottleLimitValue)
+    if (@($TestPorts).Count -eq 0 -or @($Records).Count -eq 0) { return @($Records) }
+    $indexedRecords = for ($index = 0; $index -lt $Records.Count; $index++) { [PSCustomObject]@{ Index = $index; Record = $Records[$index] } }
+    $completedRecords = 0
+    $progressActivity = "Testing requested TCP ports"
+    try {
+        $results = @($indexedRecords | ForEach-Object -Parallel {
+            function Test-TcpPort { param([string]$ComputerName, [int]$Port, [int]$TimeoutSeconds); $client = [System.Net.Sockets.TcpClient]::new(); try { $task = $client.ConnectAsync($ComputerName, $Port); if (-not $task.Wait([TimeSpan]::FromSeconds($TimeoutSeconds))) { return $false }; return $client.Connected } catch { return $false } finally { $client.Dispose() } }
+            $wrapper = $_
+            $record = $wrapper.Record
+            $resultProperties = [ordered]@{}
+            foreach ($property in $record.PSObject.Properties) { $resultProperties[$property.Name] = $property.Value }
+            $targetName = if (-not [string]::IsNullOrWhiteSpace([string]$record.DNSHostName)) { [string]$record.DNSHostName } elseif (-not [string]::IsNullOrWhiteSpace([string]$record.CN) -and -not [string]::IsNullOrWhiteSpace([string]$using:DomainName)) { "{0}.{1}" -f $record.CN, $using:DomainName } else { [string]$record.CN }
+            if ([string]::IsNullOrWhiteSpace($targetName)) { $resultProperties["PortStatus"] = "NoTarget" } else { $portStatuses = New-Object System.Collections.Generic.List[string]; foreach ($port in $using:TestPorts) { $isOpen = Test-TcpPort -ComputerName $targetName -Port $port -TimeoutSeconds $using:TimeoutSeconds; $portStatuses.Add(("{0}:{1}" -f $port, $(if ($isOpen) { "Open" } else { "Closed" }))) }; $resultProperties["PortStatus"] = [string]::Join(";", $portStatuses) }
+            [PSCustomObject]@{ Index = $wrapper.Index; Record = [PSCustomObject]$resultProperties }
+        } -ThrottleLimit $ThrottleLimitValue | ForEach-Object { $completedRecords++; if (Test-ShouldUpdateProgress -CurrentCount $completedRecords -TotalCount $Records.Count -ProgressUpdateInterval 100) { Write-ScanProgress -Id 5 -Activity $progressActivity -Status ("Completed {0} of {1} device(s)" -f $completedRecords, $Records.Count) -CompletedCount $completedRecords -TotalCount $Records.Count }; $_ })
+    }
+    finally { Complete-ScanProgress -Id 5 -Activity $progressActivity }
+    Write-AdminToolsLog -Message ("Port checks complete: {0} device record(s) processed." -f $results.Count) -Level Info
+    return @($results | Sort-Object -Property Index | ForEach-Object { $_.Record })
+}
+
+function Invoke-RemoteInventoryEnrichment {
+    param([Parameter(Mandatory = $true)] [object[]]$Records, [Parameter(Mandatory = $true)] [int]$ThrottleLimitValue)
+    if (-not $RemoteInventory.IsPresent -or @($Records).Count -eq 0) { return @($Records) }
+    Write-AdminToolsLog -Message "Remote inventory requires connectivity gating; unreachable targets are skipped before CIM queries." -Level Info
+    $indexedRecords = for ($index = 0; $index -lt $Records.Count; $index++) { [PSCustomObject]@{ Index = $index; Record = $Records[$index] } }
+    $completedRecords = 0
+    $progressActivity = "Collecting remote inventory"
+    try {
+        $results = @($indexedRecords | ForEach-Object -Parallel {
             function Get-RemotePendingReboot {
                 param(
                     [Microsoft.Management.Infrastructure.CimSession]$CimSession,
@@ -1600,7 +1874,8 @@ function Invoke-OperationalEnrichment {
                         -ClassName "StdRegProv" -MethodName "EnumKey" `
                         -Arguments @{ hDefKey = $hklm; sSubKeyName = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing" } `
                         -OperationTimeoutSec $TimeoutSeconds -ErrorAction Stop
-                } catch { $probeFailures++ }
+                }
+                catch { $probeFailures++ }
 
                 $componentPending = $componentResult -and @($componentResult.sNames) -contains "RebootPending"
 
@@ -1610,7 +1885,8 @@ function Invoke-OperationalEnrichment {
                         -ClassName "StdRegProv" -MethodName "EnumKey" `
                         -Arguments @{ hDefKey = $hklm; sSubKeyName = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update" } `
                         -OperationTimeoutSec $TimeoutSeconds -ErrorAction Stop
-                } catch { $probeFailures++ }
+                }
+                catch { $probeFailures++ }
 
                 $windowsUpdatePending = $windowsUpdateResult -and @($windowsUpdateResult.sNames) -contains "RebootRequired"
 
@@ -1620,12 +1896,11 @@ function Invoke-OperationalEnrichment {
                         -ClassName "StdRegProv" -MethodName "GetMultiStringValue" `
                         -Arguments @{ hDefKey = $hklm; sSubKeyName = "SYSTEM\\CurrentControlSet\\Control\\Session Manager"; sValueName = "PendingFileRenameOperations" } `
                         -OperationTimeoutSec $TimeoutSeconds -ErrorAction Stop
-                } catch { $probeFailures++ }
+                }
+                catch { $probeFailures++ }
 
                 $pendingRename = $renameResult -and @($renameResult.sValue).Count -gt 0
 
-                # If any probe failed, return $null to distinguish from a confirmed
-                # "no reboot pending" result. The caller maps $null to "Unknown".
                 if ($probeFailures -gt 0) {
                     return $null
                 }
@@ -1636,178 +1911,71 @@ function Invoke-OperationalEnrichment {
             $wrapper = $_
             $record = $wrapper.Record
             $resultProperties = [ordered]@{}
-
-            foreach ($property in $record.PSObject.Properties) {
-                $resultProperties[$property.Name] = $property.Value
-            }
-
-            $targetName = if (-not [string]::IsNullOrWhiteSpace([string]$record.DNSHostName)) {
-                [string]$record.DNSHostName
-            }
-            elseif (-not [string]::IsNullOrWhiteSpace([string]$record.CN) -and -not [string]::IsNullOrWhiteSpace([string]$using:DomainName)) {
-                "{0}.{1}" -f $record.CN, $using:DomainName
-            }
+            foreach ($property in $record.PSObject.Properties) { $resultProperties[$property.Name] = $property.Value }
+            $targetName = if (-not [string]::IsNullOrWhiteSpace([string]$record.DNSHostName)) { [string]$record.DNSHostName } elseif (-not [string]::IsNullOrWhiteSpace([string]$record.CN) -and -not [string]::IsNullOrWhiteSpace([string]$using:DomainName)) { "{0}.{1}" -f $record.CN, $using:DomainName } else { [string]$record.CN }
+            if ([string]::IsNullOrWhiteSpace($targetName)) { $resultProperties["RemoteInventoryStatus"] = "NoTarget" }
+            elseif ([string]::IsNullOrWhiteSpace([string]$using:DomainName)) { $resultProperties["RemoteInventoryStatus"] = "SkippedUntrustedTarget: domain name unavailable" }
+            elseif (-not $targetName.EndsWith(".$($using:DomainName)", [System.StringComparison]::OrdinalIgnoreCase)) { $resultProperties["RemoteInventoryStatus"] = "SkippedUntrustedTarget: target is outside the discovered AD DNS suffix" }
+            elseif ($resultProperties.Contains("ConnectivityReachable") -and $resultProperties["ConnectivityReachable"] -eq $false) { $resultProperties["RemoteInventoryStatus"] = "SkippedUnreachable" }
+            elseif (-not $resultProperties.Contains("ConnectivityReachable") -or $null -eq $resultProperties["ConnectivityReachable"]) { $resultProperties["RemoteInventoryStatus"] = "SkippedUnreachable: connectivity gate did not confirm reachability" }
             else {
-                [string]$record.CN
+                $cimSession = $null
+                try {
+                    $cimSession = New-CimSession -ComputerName $targetName -Credential $using:Credential -OperationTimeoutSec $using:TimeoutSeconds -ErrorAction Stop
+                    $operatingSystem = Get-CimInstance -ClassName "Win32_OperatingSystem" -Property LastBootUpTime,SystemDrive -CimSession $cimSession -OperationTimeoutSec $using:TimeoutSeconds -ErrorAction Stop
+                    $computerSystem = Get-CimInstance -ClassName "Win32_ComputerSystem" -Property Model,TotalPhysicalMemory,UserName -CimSession $cimSession -OperationTimeoutSec $using:TimeoutSeconds -ErrorAction Stop
+                    $bios = Get-CimInstance -ClassName "Win32_BIOS" -Property SerialNumber -CimSession $cimSession -OperationTimeoutSec $using:TimeoutSeconds -ErrorAction Stop
+                    $systemDrive = if (-not [string]::IsNullOrWhiteSpace([string]$operatingSystem.SystemDrive)) { [string]$operatingSystem.SystemDrive } else { "C:" }
+                    $logicalDisk = Get-CimInstance -ClassName "Win32_LogicalDisk" -Property FreeSpace -Filter "DeviceID = '$systemDrive'" -CimSession $cimSession -OperationTimeoutSec $using:TimeoutSeconds -ErrorAction SilentlyContinue
+                    $resultProperties["RemoteInventoryStatus"] = "Success"
+                    $resultProperties["RemoteUptimeDays"] = [Math]::Round(((Get-Date) - $operatingSystem.LastBootUpTime).TotalDays, 2)
+                    $resultProperties["SerialNumber"] = [string]$bios.SerialNumber
+                    $resultProperties["Model"] = [string]$computerSystem.Model
+                    $resultProperties["TotalMemoryGB"] = if ($computerSystem.TotalPhysicalMemory) { [Math]::Round(([double]$computerSystem.TotalPhysicalMemory / 1GB), 2) } else { $null }
+                    $resultProperties["SystemDriveFreeGB"] = if ($logicalDisk -and $logicalDisk.FreeSpace) { [Math]::Round(([double]$logicalDisk.FreeSpace / 1GB), 2) } else { $null }
+                    $pendingReboot = Get-RemotePendingReboot -CimSession $cimSession -TimeoutSeconds $using:TimeoutSeconds
+                    $resultProperties["PendingReboot"] = if ($null -eq $pendingReboot) { "Unknown" } elseif ($pendingReboot) { "Yes" } else { "No" }
+                    $resultProperties["LoggedOnUser"] = [string]$computerSystem.UserName
+                }
+                catch { $resultProperties["RemoteInventoryStatus"] = "Failed: $($_.Exception.Message)" }
+                finally { if ($null -ne $cimSession) { $cimSession | Remove-CimSession } }
             }
-
-            if ($using:PerformConnectivityCheck) {
-                $resultProperties["ConnectivityMethod"] = $using:TestMethod
-                $resultProperties["ConnectivityStatus"] = "NotRequested"
-                $resultProperties["ConnectivityReachable"] = $null
-                $resultProperties["ConnectivityDetail"] = $null
-
-                switch ($using:TestMethod) {
-                    "Ping" {
-                        try {
-                            $pingResult = Test-Connection -TargetName $targetName -Count $using:PingCount -Quiet -TimeoutSeconds $using:TimeoutSeconds -ErrorAction SilentlyContinue
-                            if ($pingResult -is [System.Array]) {
-                                $reachable = ($pingResult -contains $true)
-                            }
-                            else {
-                                $reachable = [bool]$pingResult
-                            }
-                        }
-                        catch {
-                            $reachable = $false
-                        }
-
-                        $resultProperties["ConnectivityReachable"] = $reachable
-                        $resultProperties["ConnectivityStatus"] = if ($reachable) { "Reachable" } else { "Unreachable" }
-                        $resultProperties["ConnectivityDetail"] = "ICMP ping check."
-                    }
-                    "WinRM" {
-                        $openPorts = New-Object System.Collections.Generic.List[string]
-                        foreach ($winRmPort in 5985, 5986) {
-                            if (Test-TcpPort -ComputerName $targetName -Port $winRmPort -TimeoutSeconds $using:TimeoutSeconds) {
-                                $openPorts.Add([string]$winRmPort)
-                            }
-                        }
-
-                        $reachable = $openPorts.Count -gt 0
-                        $resultProperties["ConnectivityReachable"] = $reachable
-                        $resultProperties["ConnectivityStatus"] = if ($reachable) { "Reachable" } else { "Unreachable" }
-                        $resultProperties["ConnectivityDetail"] = if ($reachable) { "Open WinRM ports: $([string]::Join(',', $openPorts))" } else { "WinRM ports 5985/5986 unavailable." }
-                    }
-                }
-            }
-
-            if ($using:ResolveDns) {
-                if ([string]::IsNullOrWhiteSpace($targetName)) {
-                    $resultProperties["DnsStatus"] = "NoTarget"
-                    $resultProperties["DnsResolvedIPs"] = $null
-                    $resultProperties["DnsMatchesAdIPv4"] = $null
-                }
-                else {
-                    try {
-                        $dnsResults = @(Resolve-DnsName -Name $targetName -Type A -ErrorAction Stop | Where-Object { $_.IPAddress } | Select-Object -ExpandProperty IPAddress -Unique)
-                        $resultProperties["DnsStatus"] = if ($dnsResults.Count -gt 0) { "Resolved" } else { "NoARecord" }
-                        $resultProperties["DnsResolvedIPs"] = ($dnsResults -join ",")
-
-                        $adIps = @([string]$record.IPv4Address -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-                        if ($dnsResults.Count -gt 0 -and $adIps.Count -gt 0) {
-                            $resultProperties["DnsMatchesAdIPv4"] = @($dnsResults | Where-Object { $adIps -contains $_ }).Count -gt 0
-                        }
-                        else {
-                            $resultProperties["DnsMatchesAdIPv4"] = $null
-                        }
-                    }
-                    catch {
-                        $resultProperties["DnsStatus"] = "Failed"
-                        $resultProperties["DnsResolvedIPs"] = $null
-                        $resultProperties["DnsMatchesAdIPv4"] = $null
-                    }
-                }
-            }
-
-            if (@($using:TestPorts).Count -gt 0) {
-                if ([string]::IsNullOrWhiteSpace($targetName)) {
-                    $resultProperties["PortStatus"] = "NoTarget"
-                }
-                else {
-                    $portStatuses = New-Object System.Collections.Generic.List[string]
-                    foreach ($port in $using:TestPorts) {
-                        $isOpen = Test-TcpPort -ComputerName $targetName -Port $port -TimeoutSeconds $using:TimeoutSeconds
-                        $portStatuses.Add(("{0}:{1}" -f $port, $(if ($isOpen) { "Open" } else { "Closed" })))
-                    }
-
-                    $resultProperties["PortStatus"] = [string]::Join(";", $portStatuses)
-                }
-            }
-
-            if ($using:RemoteInventory) {
-                if ([string]::IsNullOrWhiteSpace($targetName)) {
-                    $resultProperties["RemoteInventoryStatus"] = "NoTarget"
-                }
-                elseif ([string]::IsNullOrWhiteSpace([string]$using:DomainName)) {
-                    $resultProperties["RemoteInventoryStatus"] = "SkippedUntrustedTarget: domain name unavailable"
-                }
-                elseif (-not $targetName.EndsWith(".$($using:DomainName)", [System.StringComparison]::OrdinalIgnoreCase)) {
-                    $resultProperties["RemoteInventoryStatus"] = "SkippedUntrustedTarget: target is outside the discovered AD DNS suffix"
-                }
-                elseif ($resultProperties.Contains("ConnectivityReachable") -and $resultProperties["ConnectivityReachable"] -eq $false) {
-                    $resultProperties["RemoteInventoryStatus"] = "SkippedUnreachable"
-                }
-                else {
-                    $cimSession = $null
-
-                    try {
-                        $cimSession = New-CimSession -ComputerName $targetName -Credential $using:Credential -OperationTimeoutSec $using:TimeoutSeconds -ErrorAction Stop
-
-                        $operatingSystem = Get-CimInstance -ClassName "Win32_OperatingSystem" -CimSession $cimSession -OperationTimeoutSec $using:TimeoutSeconds -ErrorAction Stop
-                        $computerSystem = Get-CimInstance -ClassName "Win32_ComputerSystem" -CimSession $cimSession -OperationTimeoutSec $using:TimeoutSeconds -ErrorAction Stop
-                        $bios = Get-CimInstance -ClassName "Win32_BIOS" -CimSession $cimSession -OperationTimeoutSec $using:TimeoutSeconds -ErrorAction Stop
-
-                        $systemDrive = if (-not [string]::IsNullOrWhiteSpace([string]$operatingSystem.SystemDrive)) {
-                            [string]$operatingSystem.SystemDrive
-                        }
-                        else {
-                            "C:"
-                        }
-
-                        $logicalDisk = Get-CimInstance -ClassName "Win32_LogicalDisk" -Filter "DeviceID = '$systemDrive'" -CimSession $cimSession -OperationTimeoutSec $using:TimeoutSeconds -ErrorAction SilentlyContinue
-                        $pendingRebootRaw = Get-RemotePendingReboot -CimSession $cimSession -TimeoutSeconds $using:TimeoutSeconds
-
-                        $resultProperties["RemoteInventoryStatus"] = "Success"
-                        $resultProperties["RemoteUptimeDays"] = [Math]::Round(((Get-Date) - $operatingSystem.LastBootUpTime).TotalDays, 2)
-                        $resultProperties["SerialNumber"] = [string]$bios.SerialNumber
-                        $resultProperties["Model"] = [string]$computerSystem.Model
-                        $resultProperties["TotalMemoryGB"] = if ($computerSystem.TotalPhysicalMemory) { [Math]::Round(([double]$computerSystem.TotalPhysicalMemory / 1GB), 2) } else { $null }
-                        $resultProperties["SystemDriveFreeGB"] = if ($logicalDisk -and $logicalDisk.FreeSpace) { [Math]::Round(([double]$logicalDisk.FreeSpace / 1GB), 2) } else { $null }
-                        $resultProperties["PendingReboot"] = if ($null -eq $pendingRebootRaw) { "Unknown" } else { $pendingRebootRaw }
-                        $resultProperties["LoggedOnUser"] = [string]$computerSystem.UserName
-                    }
-                    catch {
-                        $resultProperties["RemoteInventoryStatus"] = "Failed: $($_.Exception.Message)"
-                    }
-                    finally {
-                        if ($null -ne $cimSession) {
-                            $cimSession | Remove-CimSession
-                        }
-                    }
-                }
-            }
-
-            [PSCustomObject]@{
-                Index  = $wrapper.Index
-                Record = [PSCustomObject]$resultProperties
-            }
-            } -ThrottleLimit $ThrottleLimit | ForEach-Object {
-                $completedRecords++
-                Write-ScanProgress -Id 5 -Activity $progressActivity `
-                    -Status ("Completed {0} of {1} device(s)" -f $completedRecords, $Records.Count) `
-                    -CompletedCount $completedRecords -TotalCount $Records.Count
-                $_
-            })
+            [PSCustomObject]@{ Index = $wrapper.Index; Record = [PSCustomObject]$resultProperties }
+        } -ThrottleLimit $ThrottleLimitValue | ForEach-Object { $completedRecords++; if (Test-ShouldUpdateProgress -CurrentCount $completedRecords -TotalCount $Records.Count -ProgressUpdateInterval 100) { Write-ScanProgress -Id 5 -Activity $progressActivity -Status ("Completed {0} of {1} device(s)" -f $completedRecords, $Records.Count) -CompletedCount $completedRecords -TotalCount $Records.Count }; $_ })
     }
-    finally {
-        Complete-ScanProgress -Id 5 -Activity $progressActivity
-    }
-
-    Write-AdminToolsLog -Message ("Operational enrichment complete: {0} device record(s) processed." -f $results.Count) -Level Info
+    finally { Complete-ScanProgress -Id 5 -Activity $progressActivity }
+    Write-AdminToolsLog -Message ("Remote inventory complete: {0} device record(s) processed." -f $results.Count) -Level Info
     return @($results | Sort-Object -Property Index | ForEach-Object { $_.Record })
 }
 
+function Invoke-OperationalEnrichment {
+    param(
+        [Parameter(Mandatory = $true)] [object[]]$Records,
+        [Parameter(Mandatory = $true)] [bool]$PerformConnectivityCheck
+    )
+
+    if (@($Records).Count -eq 0) { return @() }
+    $needsEnrichment = $PerformConnectivityCheck -or $ResolveDns.IsPresent -or @($TestPorts).Count -gt 0 -or $RemoteInventory.IsPresent
+    if (-not $needsEnrichment) { return @($Records) }
+
+    $ConnectivityThrottleLimitEffective = Get-EffectiveThrottleLimit -SpecificThrottleLimit $ConnectivityThrottleLimit -DefaultThrottleLimit $ThrottleLimit
+    $DnsThrottleLimitEffective = Get-EffectiveThrottleLimit -SpecificThrottleLimit $DnsThrottleLimit -DefaultThrottleLimit $ThrottleLimit
+    $PortThrottleLimitEffective = Get-EffectiveThrottleLimit -SpecificThrottleLimit $PortThrottleLimit -DefaultThrottleLimit $ThrottleLimit
+    $RemoteInventoryThrottleLimitEffective = Get-EffectiveThrottleLimit -SpecificThrottleLimit $RemoteInventoryThrottleLimit -DefaultThrottleLimit $ThrottleLimit
+
+    $workingRecords = @($Records)
+    $connectivityRequired = $PerformConnectivityCheck -or $RemoteInventory.IsPresent
+    $connectivityMethod = if ($RemoteInventory.IsPresent -and $TestMethod -eq "None") { "WinRM" } else { $TestMethod }
+    if ($RemoteInventory.IsPresent -and $TestMethod -eq "None") { Write-AdminToolsLog -Message "Remote inventory requires connectivity gating; using WinRM reachability because TestMethod is None." -Level Warning }
+
+    if ($connectivityRequired) { $stage = Start-PerformanceStage -Name "OperationalConnectivity" -InputCount $workingRecords.Count -EffectiveThrottle $ConnectivityThrottleLimitEffective -Details "method=$connectivityMethod; timeout=$TimeoutSeconds"; $workingRecords = Invoke-ConnectivityEnrichment -Records $workingRecords -PerformConnectivityCheck:$true -Method $connectivityMethod -ThrottleLimitValue $ConnectivityThrottleLimitEffective; [void](Stop-PerformanceStage -Stage $stage -OutputCount $workingRecords.Count) }
+    if ($ResolveDns.IsPresent) { $stage = Start-PerformanceStage -Name "DnsResolution" -InputCount $workingRecords.Count -EffectiveThrottle $DnsThrottleLimitEffective -Details "timeout=$TimeoutSeconds"; $workingRecords = Invoke-DnsEnrichment -Records $workingRecords -ThrottleLimitValue $DnsThrottleLimitEffective; [void](Stop-PerformanceStage -Stage $stage -OutputCount $workingRecords.Count) }
+    if (@($TestPorts).Count -gt 0) { $stage = Start-PerformanceStage -Name "PortChecks" -InputCount $workingRecords.Count -EffectiveThrottle $PortThrottleLimitEffective -Details "ports=$([string]::Join(',', @($TestPorts))); timeout=$TimeoutSeconds"; $workingRecords = Invoke-PortEnrichment -Records $workingRecords -ThrottleLimitValue $PortThrottleLimitEffective; [void](Stop-PerformanceStage -Stage $stage -OutputCount $workingRecords.Count) }
+    if ($RemoteInventory.IsPresent) { $stage = Start-PerformanceStage -Name "RemoteInventory" -InputCount $workingRecords.Count -EffectiveThrottle $RemoteInventoryThrottleLimitEffective -Details "timeout=$TimeoutSeconds"; $workingRecords = Invoke-RemoteInventoryEnrichment -Records $workingRecords -ThrottleLimitValue $RemoteInventoryThrottleLimitEffective; [void](Stop-PerformanceStage -Stage $stage -OutputCount $workingRecords.Count) }
+
+    Write-AdminToolsLog -Message ("Operational enrichment complete: {0} device record(s) processed." -f $workingRecords.Count) -Level Info
+    return @($workingRecords)
+}
 function Invoke-AdComputerQuery {
     param(
         [Parameter(Mandatory = $true)]
@@ -1817,7 +1985,10 @@ function Invoke-AdComputerQuery {
         [hashtable]$BaseQueryParameters,
 
         [Parameter(Mandatory = $false)]
-        [string[]]$QuerySearchBases
+        [string[]]$QuerySearchBases,
+
+        [Parameter(Mandatory = $false)]
+        [int]$ProgressUpdateInterval = 100
     )
 
     $allResultsById = @{}
@@ -1847,6 +2018,8 @@ function Invoke-AdComputerQuery {
             }
         }
     }
+
+    Write-AdminToolsLog -Message ("AD discovery planned query operations: {0}; page size: {1}; search scope: {2}." -f $queryWorkItems.Count, $BaseQueryParameters["ResultPageSize"], $BaseQueryParameters["SearchScope"]) -Level Info
 
     $queryIndex = 0
     $progressActivity = "Discovering Active Directory devices"
@@ -1879,9 +2052,11 @@ function Invoke-AdComputerQuery {
                     $allResultsById[$identityKey] = $true
                     $allResults.Add($computer)
 
-                    Write-ScanProgress -Id 1 -Activity $progressActivity `
-                        -Status ("Query {0} of {1}; {2} unique device(s) discovered" -f ($queryIndex + 1), $queryWorkItems.Count, $allResults.Count) `
-                        -CompletedCount $queryIndex -TotalCount $queryWorkItems.Count
+                    if (Test-ShouldUpdateProgress -CurrentCount $allResults.Count -TotalCount ([Math]::Max($allResults.Count, 1)) -ProgressUpdateInterval $ProgressUpdateInterval) {
+                        Write-ScanProgress -Id 1 -Activity $progressActivity `
+                            -Status ("Query {0} of {1}; {2} unique device(s) discovered" -f ($queryIndex + 1), $queryWorkItems.Count, $allResults.Count) `
+                            -CompletedCount $queryIndex -TotalCount $queryWorkItems.Count
+                    }
                 }
             }
 
@@ -1899,6 +2074,8 @@ function Invoke-AdComputerQuery {
 
     return @($allResults.ToArray())
 }
+
+$configAndValidationStage = Start-PerformanceStage -Name "ConfigAndValidation"
 
 if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
     $ConfigPath = Resolve-ExistingPath -Path $ConfigPath -BaseDirectory $ScriptDirectory
@@ -1921,6 +2098,8 @@ if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
             "Mode",
             "DomainController",
             "DomainName",
+            "CredentialSecretName",
+            "CredentialPath",
             "ComputerListPath",
             "OutputDirectory",
             "SearchBase",
@@ -1937,6 +2116,14 @@ if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
             "RemoteInventory",
             "TimeoutSeconds",
             "ThrottleLimit",
+            "ConnectivityThrottleLimit",
+            "DnsThrottleLimit",
+            "PortThrottleLimit",
+            "RemoteInventoryThrottleLimit",
+            "AdResultPageSize",
+            "AdSearchScope",
+            "TargetedQueryChunkSize",
+            "PerformanceSummary",
             "PingCount",
             "TestMethod",
             "SkipPing",
@@ -1960,12 +2147,21 @@ Assert-AllowedValues -Purpose "ComputerType" -Values @($ComputerType) -AllowedVa
 Assert-AllowedValues -Purpose "Mode" -Values @($Mode) -AllowedValues @("Full", "Targeted")
 Assert-AllowedValues -Purpose "ExportFormat" -Values @($ExportFormat) -AllowedValues @("Csv", "Json", "Html")
 Assert-AllowedValues -Purpose "TestMethod" -Values @($TestMethod) -AllowedValues @("Ping", "WinRM", "None")
+Assert-AllowedValues -Purpose "AdSearchScope" -Values @($AdSearchScope) -AllowedValues @("Base", "OneLevel", "Subtree")
 Assert-IntegerRange -Purpose "TimeoutSeconds" -Value $TimeoutSeconds -Minimum 1 -Maximum 300
 Assert-IntegerRange -Purpose "ThrottleLimit" -Value $ThrottleLimit -Minimum 1 -Maximum 128
+Assert-IntegerRange -Purpose "ConnectivityThrottleLimit" -Value $ConnectivityThrottleLimit -Minimum 0 -Maximum 128
+Assert-IntegerRange -Purpose "DnsThrottleLimit" -Value $DnsThrottleLimit -Minimum 0 -Maximum 128
+Assert-IntegerRange -Purpose "PortThrottleLimit" -Value $PortThrottleLimit -Minimum 0 -Maximum 128
+Assert-IntegerRange -Purpose "RemoteInventoryThrottleLimit" -Value $RemoteInventoryThrottleLimit -Minimum 0 -Maximum 128
+Assert-IntegerRange -Purpose "AdResultPageSize" -Value $AdResultPageSize -Minimum 1 -Maximum 100000
+Assert-IntegerRange -Purpose "TargetedQueryChunkSize" -Value $TargetedQueryChunkSize -Minimum 1 -Maximum 1000
 Assert-IntegerRange -Purpose "PingCount" -Value $PingCount -Minimum 1 -Maximum 10
 Assert-SafeTextValues -Purpose "SearchBase" -Values @($SearchBase)
 Assert-SafeTextValues -Purpose "SearchBaseList" -Values $SearchBaseList
 Assert-SafeTextValues -Purpose "ExcludeOU" -Values $ExcludeOU
+Assert-SafeTextValues -Purpose "CredentialSecretName" -Values @($CredentialSecretName) -MaximumLength 256
+Assert-SafeTextValues -Purpose "CredentialPath" -Values @($CredentialPath)
 
 if ($SkipPing.IsPresent) {
     if ($PSBoundParameters.ContainsKey("TestMethod") -and $TestMethod -ne "None") {
@@ -1976,7 +2172,7 @@ if ($SkipPing.IsPresent) {
 }
 
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
-    $OutputDirectory = $ScriptDirectory
+    $OutputDirectory = Join-Path -Path $ScriptDirectory -ChildPath "reports\ad-computers"
 }
 
 $OutputDirectory = Resolve-OutputPath -Path $OutputDirectory -BaseDirectory $ScriptDirectory
@@ -2037,6 +2233,12 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
     Write-ErrorAndExit -Message "PowerShell 7 or greater is required." -CodeKey Prereq
 }
 
+[void](Stop-PerformanceStage -Stage $configAndValidationStage -Details "mode=$Mode; computerType=$ComputerType")
+
+$domainDiscoveryStage = Start-PerformanceStage -Name "DomainDiscovery"
+
+$Credential = Resolve-AdminToolsCredential -Credential $Credential -CredentialSecretName $CredentialSecretName -CredentialPath $CredentialPath -BaseDirectory $ScriptDirectory -AllowNetworkInputPath:$AllowNetworkInputPath
+
 Import-TrustedActiveDirectoryModule
 
 if (-not $Credential) {
@@ -2069,6 +2271,7 @@ if ([string]::IsNullOrWhiteSpace($DomainController)) {
 
 Assert-SafeDnsName -Name $DomainName -Purpose "DomainName"
 Assert-SafeDnsName -Name $DomainController -Purpose "DomainController"
+[void](Stop-PerformanceStage -Stage $domainDiscoveryStage -OutputCount 1 -Details "domain=$DomainName; domainController=$DomainController")
 
 $querySearchBases = @(Get-QuerySearchBases)
 $queryScopeDescription = if ($querySearchBases.Count -gt 0) {
@@ -2104,9 +2307,11 @@ $propertiesToGet = @(
 )
 
 $adQueryParameters = @{
-    Credential  = $Credential
-    Properties  = $propertiesToGet
-    ErrorAction = "Stop"
+    Credential     = $Credential
+    Properties     = $propertiesToGet
+    ResultPageSize = $AdResultPageSize
+    SearchScope    = $AdSearchScope
+    ErrorAction    = "Stop"
 }
 
 if (-not [string]::IsNullOrWhiteSpace($DomainController)) {
@@ -2125,6 +2330,7 @@ $auditBasePath = Join-Path $OutputDirectory "${exportPrefix}_${domainClean}_${Ru
 $deltaBasePath = Join-Path $OutputDirectory "${exportPrefix}_${domainClean}_${RunTimestamp}_Delta"
 $summaryBasePath = Join-Path $OutputDirectory "${exportPrefix}_${domainClean}_${RunTimestamp}_Summary"
 $summaryBreakdownBasePath = Join-Path $OutputDirectory "${exportPrefix}_${domainClean}_${RunTimestamp}_SummaryBreakdown"
+$performanceBasePath = Join-Path $OutputDirectory "${exportPrefix}_${domainClean}_${RunTimestamp}_Performance"
 
 $requestedCount = 0
 $adReturnedCount = 0
@@ -2140,9 +2346,11 @@ $computers = @()
 $auditRecords = @()
 
 try {
+    $adDiscoveryStage = Start-PerformanceStage -Name "AdDiscovery" -Details "pageSize=$AdResultPageSize; searchScope=$AdSearchScope; queryScope=$queryScopeDescription"
+
     if ($Mode -eq "Full") {
         Write-AdminToolsLog -Message "[MODE] Full AD inventory scan." -Level Info
-        $allQueriedComputers = Invoke-AdComputerQuery -Filters @($baseFilter) -BaseQueryParameters $adQueryParameters -QuerySearchBases $querySearchBases
+        $allQueriedComputers = Invoke-AdComputerQuery -Filters @($baseFilter) -BaseQueryParameters $adQueryParameters -QuerySearchBases $querySearchBases -ProgressUpdateInterval 100
         $adReturnedCount = $allQueriedComputers.Count
         $computers = @($allQueriedComputers | Where-Object { -not (Test-IsExcludedByOu -DistinguishedName $_.distinguishedName -ExcludedOuList $ExcludeOU) })
         $excludedByOuCount = $adReturnedCount - $computers.Count
@@ -2157,8 +2365,8 @@ try {
         }
 
         Write-AdminToolsLog -Message "Requested computer names: $requestedCount" -Level Info
-        $targetedFilters = Get-RequestedComputerFilters -RequestedComputers $requestedComputers -BaseFilter $baseFilter
-        $allQueriedComputers = Invoke-AdComputerQuery -Filters $targetedFilters -BaseQueryParameters $adQueryParameters -QuerySearchBases $querySearchBases
+        $targetedFilters = Get-RequestedComputerFilters -RequestedComputers $requestedComputers -BaseFilter $baseFilter -ChunkSize $TargetedQueryChunkSize
+        $allQueriedComputers = Invoke-AdComputerQuery -Filters $targetedFilters -BaseQueryParameters $adQueryParameters -QuerySearchBases $querySearchBases -ProgressUpdateInterval 100
         $adReturnedCount = $allQueriedComputers.Count
 
         $computerLookup = @{}
@@ -2179,8 +2387,10 @@ try {
                 }
             )
 
-            $connectivityLookup = Get-ConnectivityLookup -TargetItems $connectivityTargets -Method $TestMethod -TimeoutSecondsValue $TimeoutSeconds -PingCountValue $PingCount -ThrottleLimitValue $ThrottleLimit
+            $targetedConnectivityStage = Start-PerformanceStage -Name "TargetedConnectivity" -InputCount $connectivityTargets.Count -EffectiveThrottle (Get-EffectiveThrottleLimit -SpecificThrottleLimit $ConnectivityThrottleLimit -DefaultThrottleLimit $ThrottleLimit) -Details "method=$TestMethod; timeout=$TimeoutSeconds"
+            $connectivityLookup = Get-ConnectivityLookup -TargetItems $connectivityTargets -Method $TestMethod -TimeoutSecondsValue $TimeoutSeconds -PingCountValue $PingCount -ThrottleLimitValue (Get-EffectiveThrottleLimit -SpecificThrottleLimit $ConnectivityThrottleLimit -DefaultThrottleLimit $ThrottleLimit)
             $reachableCount = @($connectivityLookup.Values | Where-Object { $_.Reachable -eq $true }).Count
+            [void](Stop-PerformanceStage -Stage $targetedConnectivityStage -OutputCount $reachableCount)
             Write-AdminToolsLog -Message ("Targeted connectivity complete: {0} of {1} target(s) reachable." -f $reachableCount, $requestedCount) -Level Info
         }
         else {
@@ -2191,6 +2401,7 @@ try {
         $matchedComputers = New-Object System.Collections.Generic.List[object]
         $auditList = New-Object System.Collections.Generic.List[object]
         $matchingActivity = "Matching targeted devices"
+        $targetedMatchingStage = Start-PerformanceStage -Name "TargetedMatching" -InputCount $requestedCount
 
         try {
             for ($index = 0; $index -lt $requestedComputers.Count; $index++) {
@@ -2281,8 +2492,11 @@ try {
         $foundInAdCount = ($auditRecords | Where-Object { $_.FoundInAD -eq $true }).Count
         $matchedCount = $computers.Count
         $skippedCount = ($auditRecords | Where-Object { -not $_.Exported }).Count
+        [void](Stop-PerformanceStage -Stage $targetedMatchingStage -OutputCount $matchedCount -Details "skipped=$skippedCount")
         Write-AdminToolsLog -Message ("Target matching complete: {0} of {1} requested device(s) selected for export." -f $matchedCount, $requestedCount) -Level Info
     }
+
+    [void](Stop-PerformanceStage -Stage $adDiscoveryStage -InputCount $requestedCount -OutputCount $computers.Count -Details "raw=$adReturnedCount; excludedByOu=$excludedByOuCount")
 }
 catch {
     Write-ErrorAndExit -Message "Failed AD query: $($_.Exception.Message)" -CodeKey ADQuery
@@ -2325,20 +2539,25 @@ if ($computers.Count -eq 0) {
 
 $preparedRecordCount = 0
 $preparationActivity = "Preparing inventory records"
+$inventoryPreparationStage = Start-PerformanceStage -Name "InventoryPreparation" -InputCount $computers.Count
+$staleComparisonTimestamp = $RunStartedAt
 try {
     $resultList = @(
         foreach ($computer in $computers) {
-            Get-ComputerRecord -Computer $computer -Type $ComputerType -InactiveThresholdDays $InactiveDays
+            Get-ComputerRecord -Computer $computer -Type $ComputerType -InactiveThresholdDays $InactiveDays -ScanTimestamp $RunStartedAt -StaleComparisonTimestamp $staleComparisonTimestamp
             $preparedRecordCount++
-            Write-ScanProgress -Id 4 -Activity $preparationActivity `
-                -Status ("Prepared {0} of {1} device record(s)" -f $preparedRecordCount, $computers.Count) `
-                -CompletedCount $preparedRecordCount -TotalCount $computers.Count
+            if (Test-ShouldUpdateProgress -CurrentCount $preparedRecordCount -TotalCount $computers.Count -ProgressUpdateInterval 100) {
+                Write-ScanProgress -Id 4 -Activity $preparationActivity `
+                    -Status ("Prepared {0} of {1} device record(s)" -f $preparedRecordCount, $computers.Count) `
+                    -CompletedCount $preparedRecordCount -TotalCount $computers.Count
+            }
         }
     )
 }
 finally {
     Complete-ScanProgress -Id 4 -Activity $preparationActivity
 }
+[void](Stop-PerformanceStage -Stage $inventoryPreparationStage -OutputCount $resultList.Count)
 Write-AdminToolsLog -Message ("Record preparation complete: {0} device record(s) prepared." -f $resultList.Count) -Level Info
 
 if ($Mode -eq "Targeted" -and $resultList.Count -gt 0) {
@@ -2417,6 +2636,7 @@ if (-not [string]::IsNullOrWhiteSpace($CompareWithPrevious)) {
 }
 
 try {
+    $exportStage = Start-PerformanceStage -Name "Export" -InputCount $resultList.Count -Details "formats=$([string]::Join(',', @($ExportFormat)))"
     if ($SummaryOnly.IsPresent) {
         [void](Export-DataSet -BasePath $summaryBasePath -Formats @($ExportFormat) -Data $summaryTotals -Title "$ComputerType Inventory Summary Totals")
         [void](Export-DataSet -BasePath $summaryBreakdownBasePath -Formats @($ExportFormat) -Data $summaryBreakdown -Title "$ComputerType Inventory Summary Breakdown")
@@ -2424,6 +2644,8 @@ try {
     else {
         [void](Export-DataSet -BasePath $inventoryBasePath -Formats @($ExportFormat) -Data $resultList -Title "$ComputerType Inventory")
     }
+    [void](Stop-PerformanceStage -Stage $exportStage -OutputCount $resultList.Count)
+    [void](Export-PerformanceSummary -BasePath $performanceBasePath)
 }
 catch {
     Write-ErrorAndExit -Message "Failed to export final report data: $($_.Exception.Message)" -CodeKey Export
@@ -2450,3 +2672,11 @@ if (-not [string]::IsNullOrWhiteSpace($CompareWithPrevious)) {
 }
 
 exit 0
+
+
+
+
+
+
+
+

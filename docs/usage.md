@@ -31,6 +31,35 @@ Get-Module -ListAvailable ActiveDirectory
 Get-ADDomain
 ```
 
+## Reusing Credentials Securely
+
+All three AD tools accept one credential source at a time:
+
+- `-Credential` for an explicit `PSCredential` object.
+- `-CredentialSecretName` for a Microsoft.PowerShell.SecretManagement secret containing a `PSCredential`.
+- `-CredentialPath` for a Windows DPAPI-protected credential exported with `Export-Clixml`.
+
+SecretManagement is preferred for interactive administrator workstations:
+
+```powershell
+Install-Module Microsoft.PowerShell.SecretManagement, Microsoft.PowerShell.SecretStore -Scope CurrentUser
+Register-SecretVault -Name AdminToolsVault -ModuleName Microsoft.PowerShell.SecretStore -DefaultVault
+Set-Secret -Name ExampleADCredential -Secret (Get-Credential)
+
+.\Scan-ADComputers.ps1 -ComputerType Server -Mode Full -CredentialSecretName ExampleADCredential
+```
+
+A local CLIXML credential file is useful for single-user, single-machine runs:
+
+```powershell
+$credentialPath = Join-Path $env:USERPROFILE ".admintools\ad-reporting.credential.xml"
+New-Item -ItemType Directory -Force -Path (Split-Path $credentialPath) | Out-Null
+Get-Credential | Export-Clixml -LiteralPath $credentialPath
+
+.\Get-ADAdminActivity.ps1 -DaysBack 7 -CredentialPath $credentialPath
+```
+
+Credential files must be outside the repository directory. UNC credential paths are blocked unless `-AllowNetworkInputPath` is supplied. On Windows, `Export-Clixml` protects `PSCredential` secrets with DPAPI for the same user on the same computer; do not treat those files as portable credentials.
 ## Quick Start for All Scripts
 
 Computer inventory:
@@ -153,7 +182,7 @@ Write to a specific CSV:
 ```powershell
 .\Get-ADAdminActivity.ps1 `
   -DaysBack 7 `
-  -OutputCsv "C:\Temp\ADReports\AD_Admin_Activity.csv"
+  -OutputCsv ".\reports\ad-admin-activity\AD_Admin_Activity_Custom.csv"
 ```
 
 This script does not currently support JSON config files.

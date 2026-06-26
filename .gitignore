@@ -1,14 +1,90 @@
+# Local planning / workspace notes
 AdminTools-Fix-Plan.md
-# Generated manuals — run tools/New-AdminToolsManual.ps1 to regenerate
+.agents/
+.codex/
+.superpowers/
+
+# Editor / IDE state
+.vscode/
+.idea/
+*.code-workspace
+
+# Python environments and caches
+.venv/
+venv/
+env/
+.python-version
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+
+# Python build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Environment and local secrets
+.env
+.env.*
+*.secret
+*.secrets
+
+# PowerShell / tooling caches
+*.ps1xml
+
+# Generated logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+~$*
+
+# OS metadata
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment-local AD reporting config
+config/dept_codes.txt
+config/dept_list.txt
+
+config/*.json
+
+# Local helper scripts / scratch data under config
+config/count_devices_per_department.py
+config/count_servers.py
+
+# Generated report output directories
+reports/
+logs/
+
+# Root-level Scan-ADComputers exports
+/Scan-ADComputers_*.log
+/Servers_*.csv
+/Servers_*.html
+/Servers_*.json
+/Workstations_*.csv
+/Workstations_*.html
+/Workstations_*.json
+/workstations.txt
+
+# Generated manuals - run tools/New-AdminToolsManual.ps1 to regenerate
 manual/*.docx
 manual/*.html
 manual/AdminTools-Manual.md
 manual/Get-ADAdminActivity-Manual.md
 manual/Manage-ADUserAccounts-Manual.md
 manual/Scan-ADComputers-Manual.md
-workstations.txt
-.vscode/
-*.log
-*.csv
-*.html
-*.json
+
+

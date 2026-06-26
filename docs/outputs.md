@@ -2,6 +2,8 @@
 
 ## Scan-ADComputers.ps1
 
+`Scan-ADComputers.ps1` writes reports to `reports/ad-computers` by default, or to `-OutputDirectory` when supplied.
+
 `Scan-ADComputers.ps1` can export:
 
 - Inventory data
@@ -9,6 +11,7 @@
 - Separate targeted status reports
 - Summary reports
 - Delta reports
+- Optional performance summaries when `-PerformanceSummary` is supplied
 
 Supported formats:
 
@@ -26,7 +29,7 @@ supplied. Existing files are not overwritten unless `-ForceOverwrite` is supplie
 ## User Account Management Reports
 
 `Manage-ADUserAccounts.ps1` writes reports to
-`%LOCALAPPDATA%\AdminTools\ADUserAccountReports` by default, or to
+`reports/ad-user-accounts` by default, or to
 `-OutputDirectory` when supplied.
 
 Network output paths are rejected by default unless `-AllowNetworkOutputPath` is
@@ -78,7 +81,7 @@ Common user fields:
 ## AD Admin Activity Reports
 
 `Get-ADAdminActivity.ps1` writes a CSV report to `-OutputCsv`, or to
-`%LOCALAPPDATA%\AdminTools\ADAdminActivityReports` by default.
+`reports/ad-admin-activity` by default.
 
 File name pattern:
 
@@ -104,6 +107,31 @@ Common fields:
 - `EventRecordId`
 - `RenderedMessage`
 
+
+## AD Excel Reporting Outputs
+
+`scripts/build_ad_excel_reports.py` reads `Scan-ADComputers.ps1` CSV or JSON exports and writes Excel reporting output under `reports/<financial-year>/<run-date>/` by default.
+
+Output folders:
+
+- `source`: copies of the input scan exports
+- `consolidated`: one `AD_Dashboard_<financial-year>_<run-date>.xlsx` workbook
+- `departments`: one workbook folder per matched department
+- `logs`: `unmatched_devices.csv` for records that did not match a department
+
+The reporting utility requires environment-local department files:
+
+- `config/dept_list.txt`
+- `config/dept_codes.txt`
+
+Excel detail sheets add normalized reporting fields near the front of each device record:
+
+- `LastSeenDate`: preserves a valid source `LastSeenDate` when present, otherwise uses source `LastLogonDate`, with `LastLogonTimestamp` as a final fallback.
+- `InactivityDays`: source `DaysSinceLastSeen` when present, otherwise calculated from the normalized `LastSeenDate`.
+- `InactivityStatus`: `Stale` at 90 days or more, `Fresh` below 90 days, or `Unknown` when no usable source exists. Source `StaleStatus = Stale` takes priority for this status.
+
+Raw scan fields such as `DaysSinceLastSeen`, `StaleStatus`, and `IsStale` remain in the detail sheets later in the row for traceability.
+
 ## Script Coverage
 
 For setup, quick start, usage, examples, and safety notes for each script, see:
@@ -115,6 +143,7 @@ For setup, quick start, usage, examples, and safety notes for each script, see:
 ## Computer Inventory File Name Patterns
 
 - Main inventory: `<Servers|Workstations>_<domain>_<timestamp>.<ext>`
+- Performance summary: `<Servers|Workstations>_<domain>_<timestamp>_Performance.csv` and `.json`
 - Targeted audit: `<Servers|Workstations>_<domain>_<timestamp>_TargetedAudit.<ext>`
 - Separate targeted status exports (when enabled):
   - `_Matched`

@@ -44,7 +44,7 @@ Write to a specific CSV path:
 ```powershell
 .\Get-ADAdminActivity.ps1 `
   -DaysBack 7 `
-  -OutputCsv "C:\Temp\ADReports\AD_Admin_Activity.csv"
+  -OutputCsv ".\reports\ad-admin-activity\AD_Admin_Activity_Custom.csv"
 ```
 
 ## High-Level Flow
@@ -66,6 +66,7 @@ Common query controls:
 - `-DaysBack`
 - `-DomainControllers`
 - `-Credential`
+- `-CredentialSecretName` or `-CredentialPath` for reusable credentials
 - `-MaxEventsPerDomainController`
 - `-AllowPartialResults`
 - `-AllowUnverifiedDomainController`
@@ -95,7 +96,7 @@ presets.
 Example wrapper variables:
 
 ```powershell
-$reportPath = "C:\Temp\ADReports\AD_Admin_Activity.csv"
+$reportPath = ".\reports\ad-admin-activity\AD_Admin_Activity_Custom.csv"
 $domainControllers = @("dc01.domain.local", "dc02.domain.local")
 
 .\Get-ADAdminActivity.ps1 `
@@ -140,7 +141,7 @@ Include rendered event messages:
 .\Get-ADAdminActivity.ps1 `
   -DaysBack 3 `
   -IncludeMessage `
-  -OutputCsv "C:\Temp\ADReports\AD_Admin_Activity_WithMessages.csv"
+  -OutputCsv ".\reports\ad-admin-activity\AD_Admin_Activity_WithMessages.csv"
 ```
 
 ## Outputs
@@ -148,7 +149,7 @@ Include rendered event messages:
 Default output location:
 
 ```text
-%LOCALAPPDATA%\AdminTools\ADAdminActivityReports
+reports\ad-admin-activity
 ```
 
 Default file pattern:
@@ -180,5 +181,6 @@ Common fields:
 - CSV values are sanitized by default.
 - Existing CSV files are not overwritten unless `-ForceOverwrite` is supplied.
 - UNC output paths require `-AllowNetworkOutputPath`.
+- UNC credential paths require `-AllowNetworkInputPath`; credential files must be outside the repository directory.
 - Supplied Domain Controllers are verified through AD unless `-AllowUnverifiedDomainController` is supplied.
 - Use `-IncludeMessage` carefully because rendered event text can contain sensitive values.

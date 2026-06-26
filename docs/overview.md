@@ -22,6 +22,7 @@ In practical terms, it can:
 - Exclude specific OUs from final results
 - Flag stale devices based on inactivity age
 - Export reports as CSV, JSON, and HTML
+- Reuse credentials from SecretManagement or DPAPI-protected CLIXML files
 - Generate targeted audit reports
 - Compare the current export with a previous export and generate delta output
 - Produce summary-only reports
@@ -30,6 +31,8 @@ In practical terms, it can:
 - Attempt remote inventory collection through CIM/WinRM
 - Write a run log with timestamps
 - Load parameters from a JSON config file
+- Write stage timing telemetry to the run log
+- Optionally write CSV and JSON performance summaries
 - Return structured exit codes for automation
 
 `Get-ADAdminActivity.ps1` can:
@@ -38,6 +41,7 @@ In practical terms, it can:
 - Report AD administrative events such as user, computer, group, and policy changes
 - Filter to current privileged admins with `-AdminOnly`
 - Export sanitized CSV audit reports
+- Reuse credentials from SecretManagement or DPAPI-protected CLIXML files
 
 `Manage-ADUserAccounts.ps1` can:
 
@@ -45,6 +49,7 @@ In practical terms, it can:
 - Export single-user audit summaries and optional Security event details
 - Unlock one account, enable one account, reset one password, and require password change at next logon
 - Export reports as CSV, JSON, and HTML
+- Reuse credentials from SecretManagement or DPAPI-protected CLIXML files
 
 ## Requirements
 
@@ -81,6 +86,7 @@ In practical terms, it can:
 - Existing report and log files are not overwritten unless `-ForceOverwrite` is supplied.
 - Network output paths are rejected unless `-AllowNetworkOutputPath` is supplied.
 - Network input paths are rejected unless `-AllowNetworkInputPath` is supplied.
+- Stored credential files must be outside the repository directory.
 - User-supplied text inputs are checked for control characters before they are used.
 - Domain Controller and DNS names are validated before network calls.
 - `Scan-ADComputers.ps1 -RemoteInventory` skips targets outside the discovered or supplied AD DNS suffix.
@@ -92,7 +98,7 @@ In practical terms, it can:
 
 1. Read parameters and optional JSON config
 2. Prepare output and log paths
-3. Prompt for credentials if no credential was supplied
+3. Resolve explicit, stored, or prompted credentials
 4. Build the AD query scope and filters
 5. Run either a full scan or targeted scan
 6. Build inventory records with AD metadata
@@ -151,6 +157,14 @@ Operational checks:
 - `PingCount`
 - `TimeoutSeconds`
 - `ThrottleLimit`
+- `ConnectivityThrottleLimit`
+- `DnsThrottleLimit`
+- `PortThrottleLimit`
+- `RemoteInventoryThrottleLimit`
+- `AdResultPageSize`
+- `AdSearchScope`
+- `TargetedQueryChunkSize`
+- `PerformanceSummary`
 - `ResolveDns`
 - `TestPorts`
 - `RemoteInventory`
@@ -162,6 +176,8 @@ Usability and connection:
 - `DomainController`
 - `DomainName`
 - `Credential`
+- `CredentialSecretName`
+- `CredentialPath`
 - `OutputDirectory`
 - `NoClobber`
 - `ForceOverwrite`
@@ -226,5 +242,6 @@ Use the script-specific manuals for complete setup, quick start, usage, examples
 outputs, and safety details:
 
 - [Scan-ADComputers Manual](scan-adcomputers.md)
+- [AD Excel Reporting](ad-excel-reporting.md)
 - [Get-ADAdminActivity Manual](ad-admin-activity.md)
 - [Manage-ADUserAccounts Manual](user-account-management.md)

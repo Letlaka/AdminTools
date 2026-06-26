@@ -22,6 +22,7 @@ $DocumentFiles = @(
     @{ Title = "Outputs and Report Files"; Path = "docs/outputs.md" },
     @{ Title = "Examples"; Path = "docs/examples.md" },
     @{ Title = "Scan-ADComputers Manual"; Path = "docs/scan-adcomputers.md" },
+    @{ Title = "AD Excel Reporting"; Path = "docs/ad-excel-reporting.md" },
     @{ Title = "Get-ADAdminActivity Manual"; Path = "docs/ad-admin-activity.md" },
     @{ Title = "User Account Management"; Path = "docs/user-account-management.md" },
     @{ Title = "Troubleshooting"; Path = "docs/troubleshooting.md" },

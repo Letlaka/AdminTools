@@ -92,9 +92,10 @@ Possible causes:
 Things to check:
 
 - use `-TestMethod WinRM`
-- lower `-ThrottleLimit`
+- lower `-ThrottleLimit` or `-RemoteInventoryThrottleLimit`
 - increase `-TimeoutSeconds`
 - run without `-RemoteInventory` first
+- add `-PerformanceSummary` and compare the `OperationalConnectivity`, `DnsResolution`, `PortChecks`, and `RemoteInventory` timings
 
 ## Remote Inventory Skipped As Untrusted
 
@@ -107,6 +108,18 @@ Things to check:
 - Confirm the computer object's `DNSHostName` is under the AD DNS suffix.
 - Supply the correct `-DomainName` if discovery is not returning the expected suffix.
 - Restrict scans with `-SearchBase` or `-SearchBaseList` so only trusted computer OUs are queried.
+
+## Credential Path Rejected
+
+**Problem**
+
+- `CredentialPath` is rejected because it is under the repository or points at a UNC path.
+
+**Fix**
+
+- Store CLIXML credential files outside the repository, such as under `$env:USERPROFILE\.admintools`.
+- Use `-AllowNetworkInputPath` only when a UNC credential location is trusted and access-controlled.
+- Use only one credential source: `-Credential`, `-CredentialSecretName`, or `-CredentialPath`.
 
 ## Output Path Rejected
 

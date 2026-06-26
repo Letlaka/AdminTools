@@ -54,6 +54,12 @@ using module ./AdminToolsCommon.psm1
 .PARAMETER ChangePasswordAtLogon
     Require the selected user to change password at next logon.
 
+.PARAMETER CredentialSecretName
+    SecretManagement secret name containing a PSCredential.
+
+.PARAMETER CredentialPath
+    Path to a PSCredential exported with Export-Clixml. Credential files must be outside the repository directory.
+
 .NOTES
     Run from an elevated PowerShell session using an account allowed to query AD.
     Event audit features require permission to read Security logs on Domain
@@ -88,6 +94,10 @@ param(
     [string[]]$DomainControllers,
 
     [PSCredential]$Credential,
+
+    [string]$CredentialSecretName,
+
+    [string]$CredentialPath,
 
     [ValidateSet("UserSummary", "PasswordAge", "LockedOut", "AuditEvents", "PrivilegedUsers", "DisabledUsers", "StaleUsers")]
     [string[]]$ReportType = @("UserSummary"),
@@ -450,11 +460,7 @@ function Get-SafeFileNamePart {
 }
 
 function Get-DefaultOutputDirectory {
-    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-        return Join-Path -Path $env:LOCALAPPDATA -ChildPath "AdminTools\ADUserAccountReports"
-    }
-
-    return Join-Path -Path $ScriptDirectory -ChildPath "ADUserAccountReports"
+    return Join-Path -Path $ScriptDirectory -ChildPath "reports\ad-user-accounts"
 }
 
 function Export-AccountReport {
@@ -1089,6 +1095,8 @@ Assert-SafeTextValues -Purpose "Identity" -Values @($Identity) -MaximumLength 10
 Assert-SafeTextValues -Purpose "SearchBase" -Values @($SearchBase)
 Assert-SafeTextValues -Purpose "SearchBaseList" -Values $SearchBaseList
 Assert-SafeTextValues -Purpose "ExcludeOU" -Values $ExcludeOU
+Assert-SafeTextValues -Purpose "CredentialSecretName" -Values @($CredentialSecretName) -MaximumLength 256
+Assert-SafeTextValues -Purpose "CredentialPath" -Values @($CredentialPath)
 Assert-SafeTextValues -Purpose "PrivilegedGroupNames" -Values $PrivilegedGroupNames -MaximumLength 256
 Assert-SafeTextValues -Purpose "OutputPrefix" -Values @($OutputPrefix) -MaximumLength 128
 
@@ -1107,6 +1115,8 @@ if ((Test-IsUncPath -Path $OutputDirectory) -and -not $AllowNetworkOutputPath) {
 if (-not $WhatIfPreference -and -not (Test-Path -LiteralPath $OutputDirectory)) {
     New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 }
+
+$Credential = Resolve-AdminToolsCredential -Credential $Credential -CredentialSecretName $CredentialSecretName -CredentialPath $CredentialPath -BaseDirectory $ScriptDirectory -AllowNetworkInputPath:$AllowNetworkInputPath
 
 $AdCommandParameters = Get-AdCommandParameters
 $AdDomain = Get-ADDomain @AdCommandParameters
@@ -1242,3 +1252,7 @@ if ($ExportedPaths.Count -gt 0) {
 }
 
 exit $ExitCodes.Success
+
+
+
+

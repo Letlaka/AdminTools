@@ -12,6 +12,20 @@
 .\Scan-ADComputers.ps1 -ComputerType Workstation -Mode Full
 ```
 
+
+### Reusable Credentials
+
+```powershell
+Install-Module Microsoft.PowerShell.SecretManagement, Microsoft.PowerShell.SecretStore -Scope CurrentUser
+Register-SecretVault -Name AdminToolsVault -ModuleName Microsoft.PowerShell.SecretStore -DefaultVault
+Set-Secret -Name ExampleADCredential -Secret (Get-Credential)
+
+.\Scan-ADComputers.ps1 `
+  -ComputerType Server `
+  -Mode Full `
+  -CredentialSecretName ExampleADCredential
+```
+
 ### Scope Controls
 
 ```powershell
@@ -51,6 +65,8 @@
   -ResolveDns `
   -TestPorts 445,5985,5986 `
   -RemoteInventory `
+  -RemoteInventoryThrottleLimit 8 `
+  -TimeoutSeconds 5 `
   -InactiveDays 90
 ```
 
@@ -69,7 +85,17 @@
 .\Scan-ADComputers.ps1 `
   -ComputerType Server `
   -Mode Full `
-  -CompareWithPrevious "C:\Temp\ADReports\Servers_domain_local_20260501090000.csv"
+  -CompareWithPrevious ".\reports\ad-computers\Servers_domain_local_20260501090000.csv"
+```
+
+### Fast Inventory
+
+```powershell
+.\Scan-ADComputers.ps1 `
+  -ComputerType Server `
+  -Mode Full `
+  -NoProgress `
+  -ExportFormat Csv
 ```
 
 ### Unattended Scan Without Progress
@@ -90,7 +116,7 @@
   "ComputerType": "Server",
   "Mode": "Targeted",
   "ComputerListPath": ".\\serverlist.txt",
-  "OutputDirectory": ".\\Output\\TargetedServers",
+  "CredentialSecretName": "ExampleADCredential",
   "ExportFormat": ["Csv", "Json", "Html"],
   "NoClobber": true,
   "NoProgress": true,
@@ -102,7 +128,9 @@
   "InactiveDays": 90,
   "SeparateStatusExports": true,
   "TimeoutSeconds": 5,
-  "ThrottleLimit": 12
+  "ThrottleLimit": 12,
+  "RemoteInventoryThrottleLimit": 8,
+  "PerformanceSummary": true
 }
 ```
 
@@ -117,7 +145,7 @@
 ```powershell
 .\Get-ADAdminActivity.ps1 `
   -DaysBack 7 `
-  -OutputCsv "C:\Temp\ADReports\AD_Admin_Activity.csv"
+  -OutputCsv ".\reports\ad-admin-activity\AD_Admin_Activity_Custom.csv"
 ```
 
 ### Privileged Admin Activity
@@ -153,7 +181,7 @@
 .\Get-ADAdminActivity.ps1 `
   -DaysBack 3 `
   -IncludeMessage `
-  -OutputCsv "C:\Temp\ADReports\AD_Admin_Activity_WithMessages.csv"
+  -OutputCsv ".\reports\ad-admin-activity\AD_Admin_Activity_WithMessages.csv"
 ```
 
 ### JSON Config
@@ -256,7 +284,21 @@ $userScopes = @("OU=Users,DC=domain,DC=local", "OU=Admins,DC=domain,DC=local")
   -Mode Report `
   -ReportType UserSummary,PasswordAge,PrivilegedUsers `
   -SearchBaseList $userScopes `
-  -OutputDirectory "C:\Temp\ADReports\UserAccounts" `
+  -OutputDirectory ".\reports\ad-user-accounts\scoped-users" `
   -ExportFormat Csv,Html `
   -NoClobber
 ```
+
+## AD Excel Reporting
+
+### Excel Dashboard Reports
+
+```powershell
+uv sync
+
+uv run python scripts/build_ad_excel_reports.py `
+  --servers reports/ad-computers/Servers_example_corp_local_20260625.csv `
+  --workstations reports/ad-computers/Workstations_example_corp_local_20260625.csv `
+  --as-of-date 2026-06-25
+```
+

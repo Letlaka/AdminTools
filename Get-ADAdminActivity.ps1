@@ -36,6 +36,9 @@ using module ./AdminToolsCommon.psm1
 .PARAMETER AllowNetworkOutputPath
     Allow writing the CSV report to a UNC path. Network output paths are rejected by default.
 
+.PARAMETER AllowNetworkInputPath
+    Allow reading credential files from UNC paths. Network input paths are rejected by default.
+
 .PARAMETER AllowUnverifiedDomainController
     Allow manually supplied Domain Controller names without verifying them against AD discovery.
 
@@ -44,6 +47,12 @@ using module ./AdminToolsCommon.psm1
 
 .PARAMETER Credential
     Credential used for AD discovery, privileged group lookups, and remote Security log reads.
+
+.PARAMETER CredentialSecretName
+    SecretManagement secret name containing a PSCredential.
+
+.PARAMETER CredentialPath
+    Path to a PSCredential exported with Export-Clixml. Credential files must be outside the repository directory.
 #>
 
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
@@ -59,6 +68,10 @@ param(
     [string[]]$DomainControllers,
 
     [PSCredential]$Credential,
+
+    [string]$CredentialSecretName,
+
+    [string]$CredentialPath,
 
     [switch]$AdminOnly,
 
@@ -84,6 +97,8 @@ param(
 
     [switch]$AllowNetworkOutputPath,
 
+    [switch]$AllowNetworkInputPath,
+
     [switch]$AllowUnverifiedDomainController,
 
     [switch]$DisableCsvSanitization
@@ -108,15 +123,13 @@ $SecurityAuditProviderName = "Microsoft-Windows-Security-Auditing"
 $StartTime = (Get-Date).AddDays(-1 * $DaysBack)
 
 if (-not $PSBoundParameters.ContainsKey("OutputCsv")) {
-    $DefaultOutputRoot = if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-        Join-Path -Path $env:LOCALAPPDATA -ChildPath "AdminTools\ADAdminActivityReports"
-    }
-    else {
-        Join-Path -Path (Get-Location).Path -ChildPath "ADAdminActivityReports"
-    }
-
+    $DefaultOutputRoot = Join-Path -Path $PSScriptRoot -ChildPath "reports\ad-admin-activity"
     $OutputCsv = Join-Path -Path $DefaultOutputRoot -ChildPath ("AD_Admin_Activity_Report_{0}.csv" -f (Get-Date -Format "yyyyMMddHHmmss"))
 }
+
+Assert-SafeTextValues -Purpose "CredentialSecretName" -Values @($CredentialSecretName) -MaximumLength 256
+Assert-SafeTextValues -Purpose "CredentialPath" -Values @($CredentialPath)
+$Credential = Resolve-AdminToolsCredential -Credential $Credential -CredentialSecretName $CredentialSecretName -CredentialPath $CredentialPath -BaseDirectory $PSScriptRoot -AllowNetworkInputPath:$AllowNetworkInputPath
 
 if ($ForceOverwrite -and $NoClobber) {
     throw "ForceOverwrite and NoClobber cannot be used together."
@@ -615,3 +628,6 @@ $SortedRecords |
     Format-Table -AutoSize
 
 exit $ExitCodes.Success
+
+
+

@@ -127,6 +127,7 @@ Output and safety controls:
 - `-NoClobber`
 - `-ForceOverwrite`
 - `-AllowNetworkInputPath`
+- Credential reuse with `-CredentialSecretName` or `-CredentialPath`; use only one of these or `-Credential`
 - `-AllowNetworkOutputPath`
 - `-DisableCsvSanitization`
 
@@ -138,7 +139,7 @@ files. Use command-line parameters or a wrapper script for repeatable presets.
 Example wrapper variables:
 
 ```powershell
-$userReportOutput = "C:\Temp\ADReports\UserAccounts"
+$userReportOutput = ".\reports\ad-user-accounts\scoped-users"
 $userScopes = @("OU=Users,DC=domain,DC=local", "OU=Admins,DC=domain,DC=local")
 
 .\Manage-ADUserAccounts.ps1 `
@@ -243,7 +244,7 @@ Unlock and enable an account:
 Default output location:
 
 ```text
-%LOCALAPPDATA%\AdminTools\ADUserAccountReports
+reports\ad-user-accounts
 ```
 
 File name pattern:
@@ -279,7 +280,8 @@ Supported export formats:
 - `-ResetPassword` requires either `-NewPassword` or `-GenerateTemporaryPassword`.
 - Generated temporary passwords require `-ShowGeneratedPassword`, are displayed once in the console, and are not written to report files.
 - Network output paths require `-AllowNetworkOutputPath`.
-- Network user list paths require `-AllowNetworkInputPath`.
+- Network user list and credential paths require `-AllowNetworkInputPath`.
+- `-CredentialPath` files must be outside the repository directory and should be readable only by the account running the script.
 - Existing report files are not overwritten unless `-ForceOverwrite` is supplied.
 - CSV exports are sanitized by default unless `-DisableCsvSanitization` is supplied.
 - Domain Controller names and discovered AD DNS roots are validated before event-log queries.

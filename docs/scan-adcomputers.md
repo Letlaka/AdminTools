@@ -80,6 +80,18 @@ Operational checks:
 - `-RemoteInventory`
 - `-TimeoutSeconds`
 - `-ThrottleLimit`
+- `-ConnectivityThrottleLimit`, `-DnsThrottleLimit`, `-PortThrottleLimit`, and `-RemoteInventoryThrottleLimit` for phase-specific parallelism; each defaults to `-ThrottleLimit` when omitted
+
+AD discovery tuning:
+
+- `-AdResultPageSize` defaults to `1000`
+- `-AdSearchScope Base|OneLevel|Subtree` defaults to `Subtree`
+- `-TargetedQueryChunkSize` defaults to `40` for targeted list query batching
+
+Performance reporting:
+
+- Stage timings are always written to the run log.
+- `-PerformanceSummary` writes CSV and JSON timing summaries beside the normal report.
 
 Reporting controls:
 
@@ -96,6 +108,7 @@ Safety controls:
 - `-NoClobber`
 - `-ForceOverwrite`
 - `-AllowNetworkInputPath`
+- Credential reuse with `-CredentialSecretName` or `-CredentialPath`; use only one of these or `-Credential`
 - `-AllowNetworkOutputPath`
 - `-DisableCsvSanitization`
 
@@ -124,7 +137,7 @@ Example full inventory config:
 {
   "ComputerType": "Server",
   "Mode": "Full",
-  "OutputDirectory": ".\\Output\\ServerInventory",
+  "CredentialSecretName": "ExampleADCredential",
   "ExportFormat": ["Csv", "Json", "Html"],
   "SearchBase": "OU=Servers,DC=domain,DC=local",
   "ExcludeOU": ["OU=Decommissioned,OU=Servers,DC=domain,DC=local"],
@@ -146,11 +159,12 @@ Example targeted diagnostic config:
   "ComputerType": "Server",
   "Mode": "Targeted",
   "ComputerListPath": ".\\serverlist.txt",
-  "OutputDirectory": ".\\Output\\TargetedServers",
   "ExportFormat": ["Csv", "Html"],
   "TestMethod": "WinRM",
   "TimeoutSeconds": 5,
   "ThrottleLimit": 12,
+  "RemoteInventoryThrottleLimit": 8,
+  "PerformanceSummary": true,
   "ResolveDns": true,
   "TestPorts": [445, 5985, 5986],
   "RemoteInventory": true,
@@ -172,7 +186,7 @@ connectivity and matching, record preparation, operational enrichment, and
 export status. For a scheduled or redirected run, suppress transient progress:
 
 ```powershell
-.\Scan-ADComputers.ps1 -ComputerType Server -Mode Full -NoProgress
+.\Scan-ADComputers.ps1 -ComputerType Server -Mode Full -NoProgress -ExportFormat Csv
 ```
 
 ## Examples
@@ -197,6 +211,19 @@ Targeted server diagnostics:
   -ComputerListPath ".\serverlist.txt" `
   -TestMethod WinRM `
   -ResolveDns `
+  -TestPorts 445,5985 `
+  -TimeoutSeconds 5
+```
+
+Targeted server diagnostics with status split exports:
+
+```powershell
+.\Scan-ADComputers.ps1 `
+  -ComputerType Server `
+  -Mode Targeted `
+  -ComputerListPath ".\serverlist.txt" `
+  -TestMethod WinRM `
+  -ResolveDns `
   -TestPorts 445,5985,5986 `
   -SeparateStatusExports
 ```
@@ -210,7 +237,8 @@ Remote inventory with trusted scope controls:
   -SearchBase "OU=Production Servers,DC=domain,DC=local" `
   -TestMethod WinRM `
   -RemoteInventory `
-  -ThrottleLimit 8
+  -RemoteInventoryThrottleLimit 8 `
+  -TimeoutSeconds 5
 ```
 
 Delta report from a previous CSV export:
@@ -219,13 +247,12 @@ Delta report from a previous CSV export:
 .\Scan-ADComputers.ps1 `
   -ComputerType Server `
   -Mode Full `
-  -CompareWithPrevious "C:\Temp\ADReports\Servers_domain_local_20260501090000.csv"
+  -CompareWithPrevious ".\reports\ad-computers\Servers_domain_local_20260501090000.csv"
 ```
 
 ## Outputs
 
-Default output location is the repository directory unless `-OutputDirectory` is
-supplied.
+Default output location is `reports/ad-computers` unless `-OutputDirectory` is supplied. The default log path is in the resolved output directory. When `-PerformanceSummary` is supplied, timing files are written as `<Servers|Workstations>_<domain>_<timestamp>_Performance.csv` and `.json`.
 
 Common outputs:
 
@@ -241,6 +268,7 @@ Common outputs:
 
 - Existing output and log files are not overwritten unless `-ForceOverwrite` is supplied.
 - UNC output paths require `-AllowNetworkOutputPath`.
-- UNC config, targeted list, and comparison input paths require `-AllowNetworkInputPath`.
+- UNC config, targeted list, comparison, and credential input paths require `-AllowNetworkInputPath`.
 - CSV values are sanitized by default.
 - Remote inventory skips targets outside the AD DNS suffix.
+- `-CredentialPath` files must be outside the repository directory and should be readable only by the account running the script.

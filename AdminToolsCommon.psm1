@@ -381,6 +381,138 @@ function Test-ContainsControlCharacter {
     return ($null -ne $Value -and $Value -match '[\x00-\x1F\x7F]')
 }
 
+function Resolve-AdminToolsPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$BaseDirectory
+    )
+
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return [System.IO.Path]::GetFullPath($Path)
+    }
+
+    return [System.IO.Path]::GetFullPath((Join-Path -Path $BaseDirectory -ChildPath $Path))
+}
+
+function Test-IsPathUnderDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Directory
+    )
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+    $fullDirectory = [System.IO.Path]::GetFullPath($Directory).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)
+
+    return (
+        $fullPath.Equals($fullDirectory, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $fullPath.StartsWith($fullDirectory + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $fullPath.StartsWith($fullDirectory + [System.IO.Path]::AltDirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)
+    )
+}
+
+function Get-AdminToolsSecret {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    return Get-Secret -Name $Name -ErrorAction Stop
+}
+
+function Resolve-AdminToolsSecretCredential {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CredentialSecretName
+    )
+
+    $secretModule = Get-Module -ListAvailable -Name Microsoft.PowerShell.SecretManagement -ErrorAction SilentlyContinue |
+        Sort-Object -Property Version -Descending |
+        Select-Object -First 1
+
+    if (-not $secretModule) {
+        throw "Microsoft.PowerShell.SecretManagement is required for -CredentialSecretName. Install it and register a vault, or use -CredentialPath."
+    }
+
+    Import-Module Microsoft.PowerShell.SecretManagement -ErrorAction Stop
+    $secret = Get-AdminToolsSecret -Name $CredentialSecretName
+
+    if ($secret -isnot [PSCredential]) {
+        throw "Secret '$CredentialSecretName' must contain a PSCredential."
+    }
+
+    return $secret
+}
+
+function Resolve-AdminToolsCredential {
+    param(
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [PSCredential]$Credential,
+
+        [Parameter(Mandatory = $false)]
+        [string]$CredentialSecretName,
+
+        [Parameter(Mandatory = $false)]
+        [string]$CredentialPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$BaseDirectory,
+
+        [Parameter(Mandatory = $false)]
+        [switch]$AllowNetworkInputPath
+    )
+
+    $sourceCount = 0
+    if ($Credential) { $sourceCount++ }
+    if (-not [string]::IsNullOrWhiteSpace($CredentialSecretName)) { $sourceCount++ }
+    if (-not [string]::IsNullOrWhiteSpace($CredentialPath)) { $sourceCount++ }
+
+    if ($sourceCount -gt 1) {
+        throw "Only one credential source can be used: -Credential, -CredentialSecretName, or -CredentialPath."
+    }
+
+    if ($Credential) {
+        return $Credential
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($CredentialSecretName)) {
+        Assert-SafeTextValues -Purpose "CredentialSecretName" -Values @($CredentialSecretName) -MaximumLength 256
+        return Resolve-AdminToolsSecretCredential -CredentialSecretName $CredentialSecretName
+    }
+
+    if ([string]::IsNullOrWhiteSpace($CredentialPath)) {
+        return $null
+    }
+
+    Assert-SafeTextValues -Purpose "CredentialPath" -Values @($CredentialPath)
+    $resolvedCredentialPath = Resolve-AdminToolsPath -Path $CredentialPath -BaseDirectory $BaseDirectory
+    $resolvedBaseDirectory = [System.IO.Path]::GetFullPath($BaseDirectory)
+
+    if (Test-IsPathUnderDirectory -Path $resolvedCredentialPath -Directory $resolvedBaseDirectory) {
+        throw "CredentialPath must point to a credential file outside the repository directory."
+    }
+
+    if ((Test-IsUncPath -Path $resolvedCredentialPath) -and -not $AllowNetworkInputPath) {
+        throw "Network credential paths are not allowed by default: $resolvedCredentialPath. Re-run with -AllowNetworkInputPath only if the location is trusted."
+    }
+
+    if (-not (Test-Path -LiteralPath $resolvedCredentialPath -PathType Leaf)) {
+        throw "CredentialPath file not found: $resolvedCredentialPath"
+    }
+
+    $loadedCredential = Import-Clixml -LiteralPath $resolvedCredentialPath -ErrorAction Stop
+    if ($loadedCredential -isnot [PSCredential]) {
+        throw "CredentialPath must contain a PSCredential exported with Export-Clixml."
+    }
+
+    return $loadedCredential
+}
 function Assert-SafeDomainControllerNames {
     param(
         [string[]]$Names
@@ -466,3 +598,6 @@ function Get-WithRetry {
 }
 
 Export-ModuleMember -Function *
+
+
+
