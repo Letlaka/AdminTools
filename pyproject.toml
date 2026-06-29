@@ -1,7 +1,7 @@
 [project]
 name = "admintools"
 version = "0.1.0"
-description = "Add your description here"
+description = "Active Directory administration and reporting tools for computer inventory, audit activity, user account operations, and Excel dashboards."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
