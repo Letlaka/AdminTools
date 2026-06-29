@@ -47,6 +47,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=4,
         help="Financial year start month. Default is 4 for April.",
     )
+    parser.add_argument(
+        "--report-scope",
+        choices=("all", "main", "departments", "department"),
+        default="all",
+        help="Report output scope. Default is all.",
+    )
+    parser.add_argument(
+        "--department",
+        help="Department name to generate when --report-scope department is used.",
+    )
     return parser.parse_args(argv)
 
 
@@ -140,8 +150,91 @@ def write_unmatched_log(path: Path, records: list[dict[str, object]]) -> None:
             )
 
 
+def validate_report_scope(args: argparse.Namespace) -> bool:
+    if args.report_scope == "department" and not args.department:
+        print("--department is required when --report-scope department is used.", file=sys.stderr)
+        return False
+    if args.report_scope != "department" and args.department:
+        print("--department can only be used with --report-scope department.", file=sys.stderr)
+        return False
+    return True
+
+
+def find_department_name(departments: list[str], requested_department: str) -> str | None:
+    requested = requested_department.casefold()
+    for department in departments:
+        if department.casefold() == requested:
+            return department
+    return None
+
+
+def departments_for_scope(args: argparse.Namespace, available_departments: list[str]) -> list[str]:
+    if args.report_scope == "main":
+        return []
+    if args.report_scope in ("all", "departments"):
+        return available_departments
+
+    matched_department = find_department_name(available_departments, args.department)
+    if matched_department is None:
+        available = ", ".join(available_departments)
+        raise ValueError(
+            f"Department '{args.department}' was not found in the generated report data. "
+            f"Available departments: {available}"
+        )
+    return [matched_department]
+
+
+def write_consolidated_report(
+    *,
+    create_consolidated_workbook,
+    folders: dict[str, Path],
+    bundle,
+    financial_year: str,
+    run_date_label: str,
+) -> Path:
+    consolidated_name = f"AD_Dashboard_{financial_year}_{run_date_label}.xlsx"
+    consolidated_path = folders["consolidated"] / consolidated_name
+    create_consolidated_workbook(
+        output_path=consolidated_path,
+        bundle=bundle,
+        financial_year=financial_year,
+        run_date_label=run_date_label,
+    )
+    return consolidated_path
+
+
+def write_department_report(
+    *,
+    create_department_workbook,
+    sanitize_file_component,
+    folders: dict[str, Path],
+    bundle,
+    department: str,
+    financial_year: str,
+    run_date_label: str,
+) -> Path:
+    department_records = bundle.records_for_department(department)
+    department_folder = folders["departments"] / sanitize_file_component(department)
+    workbook_path = department_folder / f"{sanitize_file_component(department)}_{financial_year}.xlsx"
+    create_department_workbook(
+        output_path=workbook_path,
+        department=department,
+        server_records=[record for record in department_records if record["ComputerType"] == "Server"],
+        workstation_records=[
+            record for record in department_records if record["ComputerType"] == "Workstation"
+        ],
+        financial_year=financial_year,
+        run_date_label=run_date_label,
+        department_summary=bundle.department_summary(department),
+    )
+    return workbook_path
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if not validate_report_scope(args):
+        return 2
+
     if not any((args.input, args.servers, args.workstations)):
         print("Specify at least one of --input, --servers, or --workstations.", file=sys.stderr)
         return 2
@@ -173,29 +266,31 @@ def main(argv: list[str] | None = None) -> int:
     copy_source_files(source_paths, folders["source"])
 
     run_date_label = run_date.isoformat()
-    consolidated_name = f"AD_Dashboard_{financial_year}_{run_date_label}.xlsx"
-    consolidated_path = folders["consolidated"] / consolidated_name
-    create_consolidated_workbook(
-        output_path=consolidated_path,
-        bundle=bundle,
-        financial_year=financial_year,
-        run_date_label=run_date_label,
-    )
-
-    for department in bundle.departments_with_unknown:
-        department_records = bundle.records_for_department(department)
-        department_folder = folders["departments"] / sanitize_file_component(department)
-        workbook_path = department_folder / f"{sanitize_file_component(department)}_{financial_year}.xlsx"
-        create_department_workbook(
-            output_path=workbook_path,
-            department=department,
-            server_records=[record for record in department_records if record["ComputerType"] == "Server"],
-            workstation_records=[
-                record for record in department_records if record["ComputerType"] == "Workstation"
-            ],
+    consolidated_path: Path | None = None
+    if args.report_scope in ("all", "main"):
+        consolidated_path = write_consolidated_report(
+            create_consolidated_workbook=create_consolidated_workbook,
+            folders=folders,
+            bundle=bundle,
             financial_year=financial_year,
             run_date_label=run_date_label,
-            department_summary=bundle.department_summary(department),
+        )
+
+    try:
+        selected_departments = departments_for_scope(args, bundle.departments_with_unknown)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    for department in selected_departments:
+        write_department_report(
+            create_department_workbook=create_department_workbook,
+            sanitize_file_component=sanitize_file_component,
+            folders=folders,
+            bundle=bundle,
+            department=department,
+            financial_year=financial_year,
+            run_date_label=run_date_label,
         )
 
     unmatched = unmatched_records(bundle.records)
@@ -203,8 +298,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Financial year: {financial_year}")
     print(f"Run root: {folders['root']}")
-    print(f"Consolidated workbook: {consolidated_path}")
-    print(f"Departments processed: {len(bundle.departments_with_unknown)}")
+    print(f"Consolidated workbook: {consolidated_path if consolidated_path else 'not generated'}")
+    print(f"Departments processed: {len(selected_departments)}")
     print(f"Total devices: {len(bundle.records)}")
     print(f"Unmatched devices: {len(unmatched)}")
     return 0

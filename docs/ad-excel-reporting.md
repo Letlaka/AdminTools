@@ -100,6 +100,42 @@ All detail sheets include:
 Legacy devices are sorted to the top of detail sheets and highlighted in the
 generated workbooks.
 
+## Selective Report Generation
+
+The reporting utility can generate all workbooks, only the consolidated workbook,
+all department workbooks, or one named department workbook.
+
+Generate only the consolidated dashboard workbook:
+
+```powershell
+uv run python scripts/build_ad_excel_reports.py `
+  --workstations reports/ad-computers/Workstations_example_corp_local_20260629.csv `
+  --report-scope main `
+  --as-of-date 2026-06-29
+```
+
+Generate all department workbooks without the consolidated dashboard:
+
+```powershell
+uv run python scripts/build_ad_excel_reports.py `
+  --workstations reports/ad-computers/Workstations_example_corp_local_20260629.csv `
+  --report-scope departments `
+  --as-of-date 2026-06-29
+```
+
+Generate one department workbook only:
+
+```powershell
+uv run python scripts/build_ad_excel_reports.py `
+  --workstations reports/ad-computers/Workstations_example_corp_local_20260629.csv `
+  --report-scope department `
+  --department "GPtransport" `
+  --as-of-date 2026-06-29
+```
+
+`--department` is valid only with `--report-scope department`. The department
+name is matched case-insensitively against the generated department names.
+
 ## Dependency
 
 Install the Excel dependency:
