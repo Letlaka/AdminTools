@@ -107,20 +107,25 @@ Describe "Default report output locations" {
         $ScanComputersScript = Get-Content -Raw (Join-Path $ScriptRoot "Scan-ADComputers.ps1")
     }
 
-    It "Get-ADAdminActivity defaults to reports/ad-admin-activity" {
+    It "Get-ADAdminActivity defaults to reports/ad-admin-activity and logs/get-ad-admin-activity" {
         $GetAdminActivityScript | Should -Match 'reports\\ad-admin-activity'
+        $GetAdminActivityScript | Should -Match 'logs\\get-ad-admin-activity'
+        $GetAdminActivityScript | Should -Match '\$LogPath'
         $GetAdminActivityScript | Should -Not -Match 'LOCALAPPDATA'
         $GetAdminActivityScript | Should -Not -Match 'ADAdminActivityReports'
     }
 
-    It "Manage-ADUserAccounts defaults to reports/ad-user-accounts" {
+    It "Manage-ADUserAccounts defaults to reports/ad-user-accounts and logs/manage-ad-user-accounts" {
         $ManageUsersScript | Should -Match 'reports\\ad-user-accounts'
+        $ManageUsersScript | Should -Match 'logs\\manage-ad-user-accounts'
+        $ManageUsersScript | Should -Match '\$LogPath'
         $ManageUsersScript | Should -Not -Match 'LOCALAPPDATA'
         $ManageUsersScript | Should -Not -Match 'ADUserAccountReports'
     }
 
     It "Scan-ADComputers defaults to reports/ad-computers" {
         $ScanComputersScript | Should -Match 'reports\\ad-computers'
+        $ScanComputersScript | Should -Match 'logs\\scan-ad-computers'
         $ScanComputersScript | Should -Not -Match '\$OutputDirectory = \$ScriptDirectory'
     }
 }

@@ -57,6 +57,9 @@ using module ./AdminToolsCommon.psm1
 .PARAMETER CredentialSecretName
     SecretManagement secret name containing a PSCredential.
 
+.PARAMETER LogPath
+    Optional path to the run log file.
+
 .PARAMETER CredentialPath
     Path to a PSCredential exported with Export-Clixml. Credential files must be outside the repository directory.
 
@@ -128,6 +131,8 @@ param(
     [string[]]$PrivilegedGroupNames = (Get-DefaultPrivilegedGroupNames),
 
     [string]$OutputDirectory,
+
+    [string]$LogPath,
 
     [string]$OutputPrefix = "ADUsers",
 
@@ -464,6 +469,51 @@ function Get-SafeFileNamePart {
     return ($Value -replace '[^a-zA-Z0-9._-]', '_')
 }
 
+function Write-RunLog {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message,
+
+        [ValidateSet("Info", "Warning", "Error")]
+        [string]$Level = "Info"
+    )
+
+    if (-not $script:FileLoggingEnabled -or [string]::IsNullOrWhiteSpace($script:LogFilePath)) {
+        return
+    }
+
+    $timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    $entry = "[{0}] [{1}] {2}" -f $timestamp, $Level.ToUpperInvariant(), $Message
+    Add-Content -LiteralPath $script:LogFilePath -Value $entry -Encoding UTF8
+}
+
+function Initialize-RunLog {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    if ((Test-IsUncPath -Path $Path) -and -not $AllowNetworkOutputPath) {
+        throw "Network log paths are not allowed by default: $Path. Re-run with -AllowNetworkOutputPath only if the location is trusted."
+    }
+
+    if ((Test-Path -LiteralPath $Path) -and ($NoClobber -or -not $ForceOverwrite)) {
+        throw "Log file already exists: $Path. Re-run with -ForceOverwrite only if replacing it is intended."
+    }
+
+    $logDirectory = Split-Path -Path $Path -Parent
+    if (-not [string]::IsNullOrWhiteSpace($logDirectory) -and -not (Test-Path -LiteralPath $logDirectory)) {
+        New-Item -Path $logDirectory -ItemType Directory -Force | Out-Null
+    }
+
+    Set-Content -LiteralPath $Path -Value @(
+        "Run log: Manage-ADUserAccounts.ps1",
+        "Started: $($RunStartedAt.ToString('o'))"
+    ) -Encoding UTF8
+
+    $script:LogFilePath = $Path
+    $script:FileLoggingEnabled = $true
+}
 function Get-DefaultOutputDirectory {
     return Join-Path -Path $ScriptDirectory -ChildPath "reports\ad-user-accounts"
 }
@@ -1091,10 +1141,6 @@ function Invoke-UserAccountResetAction {
     return @($ActionResults.ToArray())
 }
 
-if (-not (Import-ActiveDirectoryModule)) {
-    throw "The trusted ActiveDirectory module is required. Install RSAT Active Directory tools and retry from a Windows admin workstation."
-}
-
 Assert-SafeDomainControllerNames -Names $DomainControllers
 Assert-SafeTextValues -Purpose "Identity" -Values @($Identity) -MaximumLength 1024
 Assert-SafeTextValues -Purpose "SearchBase" -Values @($SearchBase)
@@ -1104,7 +1150,17 @@ Assert-SafeTextValues -Purpose "CredentialSecretName" -Values @($CredentialSecre
 Assert-SafeTextValues -Purpose "CredentialPath" -Values @($CredentialPath)
 Assert-SafeTextValues -Purpose "PrivilegedGroupNames" -Values $PrivilegedGroupNames -MaximumLength 256
 Assert-SafeTextValues -Purpose "OutputPrefix" -Values @($OutputPrefix) -MaximumLength 128
+Assert-SafeTextValues -Purpose "LogPath" -Values @($LogPath)
 
+if ([string]::IsNullOrWhiteSpace($LogPath)) {
+    $LogPath = Join-Path -Path (Join-Path -Path $ScriptDirectory -ChildPath "logs\manage-ad-user-accounts") -ChildPath ("Manage-ADUserAccounts_{0}.log" -f $RunTimestamp)
+}
+else {
+    $LogPath = Get-ResolvedOutputPath -Path $LogPath
+}
+
+Initialize-RunLog -Path $LogPath
+Write-Information "Run log: $LogPath"
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
     $OutputDirectory = Get-DefaultOutputDirectory
 }
@@ -1113,12 +1169,18 @@ if (-not [System.IO.Path]::IsPathRooted($OutputDirectory)) {
     $OutputDirectory = Join-Path -Path (Get-Location).Path -ChildPath $OutputDirectory
 }
 
+Write-RunLog -Message "Starting Manage-ADUserAccounts. Mode=$Mode; OutputDirectory=$OutputDirectory; ExportFormat=$($ExportFormat -join ',')"
+
 if ((Test-IsUncPath -Path $OutputDirectory) -and -not $AllowNetworkOutputPath) {
     throw "Network output paths are not allowed by default: $OutputDirectory. Re-run with -AllowNetworkOutputPath only if the location is trusted."
 }
 
 if (-not $WhatIfPreference -and -not (Test-Path -LiteralPath $OutputDirectory)) {
     New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+}
+
+if (-not (Import-ActiveDirectoryModule)) {
+    throw "The trusted ActiveDirectory module is required. Install RSAT Active Directory tools and retry from a Windows admin workstation."
 }
 
 $Credential = Resolve-AdminToolsCredential -Credential $Credential -CredentialSecretName $CredentialSecretName -CredentialPath $CredentialPath -BaseDirectory $ScriptDirectory -AllowNetworkInputPath:$AllowNetworkInputPath
@@ -1155,7 +1217,9 @@ switch ($Mode) {
                 [void]$ExportedPaths.Add($Path)
             }
 
-            Write-Information ("{0}: {1} record(s)" -f $CurrentReportType, @($ReportData).Count)
+            $ReportMessage = "{0}: {1} record(s)" -f $CurrentReportType, @($ReportData).Count
+            Write-Information $ReportMessage
+            Write-RunLog -Message $ReportMessage
         }
     }
     "UserAudit" {
@@ -1174,10 +1238,14 @@ switch ($Mode) {
             foreach ($Path in (Export-AccountReport -ReportName "UserAuditEvents" -Data $Events -Formats $ExportFormat)) {
                 [void]$ExportedPaths.Add($Path)
             }
-            Write-Information ("UserAuditEvents: {0} record(s)" -f @($Events).Count)
+            $AuditEventsMessage = "UserAuditEvents: {0} record(s)" -f @($Events).Count
+            Write-Information $AuditEventsMessage
+            Write-RunLog -Message $AuditEventsMessage
         }
 
-        Write-Information ("UserAuditSummary: {0} record(s)" -f $Summary.Count)
+        $AuditSummaryMessage = "UserAuditSummary: {0} record(s)" -f $Summary.Count
+        Write-Information $AuditSummaryMessage
+        Write-RunLog -Message $AuditSummaryMessage
     }
     "LockedOut" {
         $LockedUsers = Get-LockedOutUserReport
@@ -1217,10 +1285,14 @@ switch ($Mode) {
             foreach ($Path in (Export-AccountReport -ReportName "LockedOutEvents" -Data $LockoutEvents -Formats $ExportFormat)) {
                 [void]$ExportedPaths.Add($Path)
             }
-            Write-Information ("LockedOutEvents: {0} record(s) (filtered to currently-locked accounts)" -f $LockoutEvents.Count) -InformationAction Continue
+            $LockoutEventsMessage = "LockedOutEvents: {0} record(s) (filtered to currently-locked accounts)" -f $LockoutEvents.Count
+            Write-Information $LockoutEventsMessage -InformationAction Continue
+            Write-RunLog -Message $LockoutEventsMessage
         }
 
-        Write-Information ("LockedOut: {0} record(s)" -f @($LockedUsers).Count)
+        $LockedOutMessage = "LockedOut: {0} record(s)" -f @($LockedUsers).Count
+        Write-Information $LockedOutMessage
+        Write-RunLog -Message $LockedOutMessage
     }
     "Reset" {
         if ([string]::IsNullOrWhiteSpace($Identity)) {
@@ -1247,14 +1319,21 @@ switch ($Mode) {
             [void]$ExportedPaths.Add($Path)
         }
 
-        Write-Information ("ResetActions: {0} completed action(s)" -f @($ActionResults).Count)
+        $ResetMessage = "ResetActions: {0} completed action(s)" -f @($ActionResults).Count
+        Write-Information $ResetMessage
+        Write-RunLog -Message $ResetMessage
     }
 }
 
 if ($ExportedPaths.Count -gt 0) {
     Write-Information "Exported file(s):"
-    $ExportedPaths | ForEach-Object { Write-Information "  $_" }
+    $ExportedPaths | ForEach-Object {
+        Write-Information "  $_"
+        Write-RunLog -Message "Exported file: $_"
+    }
 }
+
+Write-RunLog -Message "Completed Manage-ADUserAccounts. ExitCode=$($ExitCodes.Success)"
 
 exit $ExitCodes.Success
 

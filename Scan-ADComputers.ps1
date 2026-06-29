@@ -2197,7 +2197,7 @@ if (-not [string]::IsNullOrWhiteSpace($CompareWithPrevious)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($LogPath)) {
-    $LogPath = Join-Path $OutputDirectory "Scan-ADComputers_$RunTimestamp.log"
+    $LogPath = Join-Path (Join-Path $ScriptDirectory "logs\scan-ad-computers") "Scan-ADComputers_$RunTimestamp.log"
 }
 else {
     $LogPath = Resolve-OutputPath -Path $LogPath -BaseDirectory $ScriptDirectory

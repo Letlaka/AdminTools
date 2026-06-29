@@ -37,6 +37,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Root folder for generated output.",
     )
     parser.add_argument(
+        "--logs-root",
+        default="logs",
+        help="Root folder for generated logs.",
+    )
+    parser.add_argument(
         "--as-of-date",
         default=None,
         help="Run date in YYYY-MM-DD format. Defaults to today.",
@@ -69,14 +74,14 @@ def resolve_run_date(raw_value: str | None) -> date:
         raise ValueError("--as-of-date must be in YYYY-MM-DD format") from exc
 
 
-def prepare_output_folders(output_root: Path, run_date: date, financial_year: str) -> dict[str, Path]:
+def prepare_output_folders(output_root: Path, logs_root: Path, run_date: date, financial_year: str) -> dict[str, Path]:
     run_root = output_root / financial_year / get_run_folder(run_date)
     folders = {
         "root": run_root,
         "source": run_root / "source",
         "consolidated": run_root / "consolidated",
         "departments": run_root / "departments",
-        "logs": run_root / "logs",
+        "logs": logs_root / "excel-reporting" / financial_year / get_run_folder(run_date),
     }
     for path in folders.values():
         path.mkdir(parents=True, exist_ok=True)
@@ -262,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
     records, source_paths = load_all_records(args)
     bundle = build_report_bundle(records=records, matcher=matcher, departments=departments, as_of_date=run_date)
 
-    folders = prepare_output_folders(Path(args.output_root), run_date, financial_year)
+    folders = prepare_output_folders(Path(args.output_root), Path(args.logs_root), run_date, financial_year)
     copy_source_files(source_paths, folders["source"])
 
     run_date_label = run_date.isoformat()
@@ -298,6 +303,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"Financial year: {financial_year}")
     print(f"Run root: {folders['root']}")
+    print(f"Log root: {folders['logs']}")
     print(f"Consolidated workbook: {consolidated_path if consolidated_path else 'not generated'}")
     print(f"Departments processed: {len(selected_departments)}")
     print(f"Total devices: {len(bundle.records)}")

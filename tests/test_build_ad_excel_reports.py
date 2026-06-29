@@ -97,6 +97,7 @@ class BuildAdExcelReportsTests(unittest.TestCase):
             root = Path(tmpdir)
             input_path = root / "workstations.csv"
             output_root = root / "reports"
+            logs_root = root / "logs"
             departments_path, dept_codes_path = self._write_department_files(root)
             self._write_csv(input_path)
 
@@ -110,6 +111,8 @@ class BuildAdExcelReportsTests(unittest.TestCase):
                 str(dept_codes_path),
                 "--output-root",
                 str(output_root),
+                "--logs-root",
+                str(logs_root),
                 "--as-of-date",
                 "2026-06-29",
                 *extra_args,
@@ -162,6 +165,44 @@ class BuildAdExcelReportsTests(unittest.TestCase):
         self.assertEqual(calls["departments"], [])
         self.assertIn("--department is required", stderr.getvalue())
 
+    def test_unmatched_log_is_written_under_central_excel_reporting_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            input_path = root / "workstations.csv"
+            output_root = root / "reports"
+            logs_root = root / "logs"
+            departments_path, dept_codes_path = self._write_department_files(root)
+            self._write_csv(input_path)
+            argv = [
+                "--workstations",
+                str(input_path),
+                "--departments",
+                str(departments_path),
+                "--dept-codes",
+                str(dept_codes_path),
+                "--output-root",
+                str(output_root),
+                "--logs-root",
+                str(logs_root),
+                "--as-of-date",
+                "2026-06-29",
+                "--report-scope",
+                "main",
+            ]
+            calls: dict[str, list[object]] = {"consolidated": [], "departments": []}
+
+            with patch.dict(sys.modules, {"lib.excel_writer": self._fake_excel_writer(calls)}):
+                exit_code = build_ad_excel_reports.main(argv)
+
+            central_log = (
+                logs_root / "excel-reporting" / "FY2026-2027" / "2026-06-29" / "unmatched_devices.csv"
+            )
+            old_log = (
+                output_root / "FY2026-2027" / "2026-06-29" / "logs" / "unmatched_devices.csv"
+            )
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(central_log.exists())
+            self.assertFalse(old_log.exists())
 
 if __name__ == "__main__":
     unittest.main()

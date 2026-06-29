@@ -102,6 +102,8 @@ generated workbooks.
 
 ## Selective Report Generation
 
+By default, report workbooks are written under `reports/<financial-year>/<run-date>/`, and the unmatched-device log is written to `logs/excel-reporting/<financial-year>/<run-date>/unmatched_devices.csv`. Use `--logs-root` to choose a different central logs root.
+
 The reporting utility can generate all workbooks, only the consolidated workbook,
 all department workbooks, or one named department workbook.
 

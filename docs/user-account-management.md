@@ -123,6 +123,7 @@ Output and safety controls:
 
 - `-ExportFormat Csv,Json,Html`
 - `-OutputDirectory`
+- `-LogPath`
 - `-OutputPrefix`
 - `-NoClobber`
 - `-ForceOverwrite`
@@ -273,15 +274,21 @@ Supported export formats:
 - `Json`
 - `Html`
 
+Default run log location:
+
+```text
+logs\manage-ad-user-accounts\Manage-ADUserAccounts_<timestamp>.log
+```
+
 ## Safety Notes
 
 - `Reset` mode supports one `-Identity` at a time.
 - Bulk reset from `-UserListPath` is intentionally not enabled.
 - `-ResetPassword` requires either `-NewPassword` or `-GenerateTemporaryPassword`.
 - Generated temporary passwords require `-ShowGeneratedPassword`, are displayed once in the console, and are not written to report files.
-- Network output paths require `-AllowNetworkOutputPath`.
+- Network output and custom log paths require `-AllowNetworkOutputPath`.
 - Network user list and credential paths require `-AllowNetworkInputPath`.
 - `-CredentialPath` files must be outside the repository directory and should be readable only by the account running the script.
-- Existing report files are not overwritten unless `-ForceOverwrite` is supplied.
+- Existing report and log files are not overwritten unless `-ForceOverwrite` is supplied.
 - CSV exports are sanitized by default unless `-DisableCsvSanitization` is supplied.
 - Domain Controller names and discovered AD DNS roots are validated before event-log queries.

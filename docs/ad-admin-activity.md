@@ -80,6 +80,7 @@ Admin filtering controls:
 Output controls:
 
 - `-OutputCsv`
+- `-LogPath`
 - `-IncludeMessage`
 - `-MaxAttributeValueLength`
 - `-NoClobber`
@@ -158,6 +159,12 @@ Default file pattern:
 AD_Admin_Activity_Report_<timestamp>.csv
 ```
 
+Default run log location:
+
+```text
+logs\get-ad-admin-activity\Get-ADAdminActivity_<timestamp>.log
+```
+
 Common fields:
 
 - `TimeCreated`
@@ -179,8 +186,8 @@ Common fields:
 ## Safety Notes
 
 - CSV values are sanitized by default.
-- Existing CSV files are not overwritten unless `-ForceOverwrite` is supplied.
-- UNC output paths require `-AllowNetworkOutputPath`.
+- Existing CSV and log files are not overwritten unless `-ForceOverwrite` is supplied.
+- UNC output and custom log paths require `-AllowNetworkOutputPath`.
 - UNC credential paths require `-AllowNetworkInputPath`; credential files must be outside the repository directory.
 - Supplied Domain Controllers are verified through AD unless `-AllowUnverifiedDomainController` is supplied.
 - Use `-IncludeMessage` carefully because rendered event text can contain sensitive values.

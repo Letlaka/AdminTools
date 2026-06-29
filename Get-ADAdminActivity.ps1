@@ -30,6 +30,9 @@ using module ./AdminToolsCommon.psm1
 .PARAMETER NoClobber
     Fail if the output CSV already exists instead of overwriting it.
 
+.PARAMETER LogPath
+    Optional path to the run log file.
+
 .PARAMETER ForceOverwrite
     Overwrite an existing output CSV. Existing files are not overwritten by default.
 
@@ -86,6 +89,8 @@ param(
 
     [string]$OutputCsv,
 
+    [string]$LogPath,
+
     [switch]$IncludeMessage,
 
     [ValidateRange(1, 10000)]
@@ -124,16 +129,26 @@ $ExitCodes = @{
     Export     = 7
 }
 
+$ScriptDirectory = if ($PSScriptRoot) {
+    $PSScriptRoot
+}
+else {
+    Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+
+$RunStartedAt = Get-Date
+$RunTimestamp = $RunStartedAt.ToString("yyyyMMddHHmmss")
 $SecurityAuditProviderName = "Microsoft-Windows-Security-Auditing"
-$StartTime = (Get-Date).AddDays(-1 * $DaysBack)
+$StartTime = $RunStartedAt.AddDays(-1 * $DaysBack)
 
 if (-not $PSBoundParameters.ContainsKey("OutputCsv")) {
     $DefaultOutputRoot = Join-Path -Path $PSScriptRoot -ChildPath "reports\ad-admin-activity"
-    $OutputCsv = Join-Path -Path $DefaultOutputRoot -ChildPath ("AD_Admin_Activity_Report_{0}.csv" -f (Get-Date -Format "yyyyMMddHHmmss"))
+    $OutputCsv = Join-Path -Path $DefaultOutputRoot -ChildPath ("AD_Admin_Activity_Report_{0}.csv" -f $RunTimestamp)
 }
 
 Assert-SafeTextValues -Purpose "CredentialSecretName" -Values @($CredentialSecretName) -MaximumLength 256
 Assert-SafeTextValues -Purpose "CredentialPath" -Values @($CredentialPath)
+Assert-SafeTextValues -Purpose "LogPath" -Values @($LogPath)
 $Credential = Resolve-AdminToolsCredential -Credential $Credential -CredentialSecretName $CredentialSecretName -CredentialPath $CredentialPath -BaseDirectory $PSScriptRoot -AllowNetworkInputPath:$AllowNetworkInputPath
 
 if ($ForceOverwrite -and $NoClobber) {
@@ -374,6 +389,51 @@ function Write-SensitiveOutputWarning {
     }
 }
 
+function Write-RunLog {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Message,
+
+        [ValidateSet("Info", "Warning", "Error")]
+        [string]$Level = "Info"
+    )
+
+    if (-not $script:FileLoggingEnabled -or [string]::IsNullOrWhiteSpace($script:LogFilePath)) {
+        return
+    }
+
+    $timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    $entry = "[{0}] [{1}] {2}" -f $timestamp, $Level.ToUpperInvariant(), $Message
+    Add-Content -LiteralPath $script:LogFilePath -Value $entry -Encoding UTF8
+}
+
+function Initialize-RunLog {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    if ((Test-IsUncPath -Path $Path) -and -not $AllowNetworkOutputPath) {
+        throw "Network log paths are not allowed by default: $Path. Re-run with -AllowNetworkOutputPath only if the location is trusted."
+    }
+
+    if ((Test-Path -LiteralPath $Path) -and ($NoClobber -or -not $ForceOverwrite)) {
+        throw "Log file already exists: $Path. Re-run with -ForceOverwrite only if replacing it is intended."
+    }
+
+    $logDirectory = Split-Path -Path $Path -Parent
+    if (-not [string]::IsNullOrWhiteSpace($logDirectory) -and -not (Test-Path -LiteralPath $logDirectory)) {
+        New-Item -Path $logDirectory -ItemType Directory -Force | Out-Null
+    }
+
+    Set-Content -LiteralPath $Path -Value @(
+        "Run log: Get-ADAdminActivity.ps1",
+        "Started: $($RunStartedAt.ToString('o'))"
+    ) -Encoding UTF8
+
+    $script:LogFilePath = $Path
+    $script:FileLoggingEnabled = $true
+}
 function ConvertTo-AdActivityRecord {
     param(
         [System.Diagnostics.Eventing.Reader.EventRecord]$EventRecord,
@@ -449,6 +509,16 @@ function ConvertTo-AdActivityRecord {
     }
 }
 
+if ([string]::IsNullOrWhiteSpace($LogPath)) {
+    $LogPath = Join-Path -Path (Join-Path -Path $ScriptDirectory -ChildPath "logs\get-ad-admin-activity") -ChildPath ("Get-ADAdminActivity_{0}.log" -f $RunTimestamp)
+}
+else {
+    $LogPath = Get-ResolvedOutputPath -Path $LogPath
+}
+
+Initialize-RunLog -Path $LogPath
+Write-Information "Run log: $LogPath"
+Write-RunLog -Message "Starting Get-ADAdminActivity. DaysBack=$DaysBack; AdminOnly=$($AdminOnly.IsPresent); OutputCsv=$OutputCsv"
 Assert-SafeDomainControllerNames -Names $DomainControllers
 Assert-SafeTextValues -Purpose "AdminSamAccountNames" -Values $AdminSamAccountNames -MaximumLength 256
 Assert-SafeTextValues -Purpose "PrivilegedGroupNames" -Values $PrivilegedGroupNames -MaximumLength 256
@@ -603,6 +673,7 @@ if ($OutputCsv) {
     try {
         $CsvRecords | Export-Csv -LiteralPath $ResolvedOutputCsv -NoTypeInformation -Encoding UTF8
         Write-Information "Report exported to: $ResolvedOutputCsv"
+        Write-RunLog -Message "Report exported to: $ResolvedOutputCsv"
     }
     catch {
         Write-Error "Failed to export report to '$ResolvedOutputCsv': $($_.Exception.Message)"
@@ -610,14 +681,17 @@ if ($OutputCsv) {
     }
 }
 
-Write-Information ("Summary: queried {0} Domain Controller(s), succeeded {1}, failed {2}, exported {3} event record(s)." -f `
+$SummaryMessage = "Summary: queried {0} Domain Controller(s), succeeded {1}, failed {2}, exported {3} event record(s)." -f `
         @($ResolvedDomainControllers).Count,
         $SuccessfulDomainControllers.Count,
         $FailedDomainControllers.Count,
-        @($SortedRecords).Count)
+        @($SortedRecords).Count
+Write-Information $SummaryMessage
+Write-RunLog -Message $SummaryMessage
 
 if ($FailedDomainControllers.Count -gt 0) {
     Write-Warning "Partial report: at least one Domain Controller could not be queried."
+    Write-RunLog -Message "Partial report: at least one Domain Controller could not be queried." -Level Warning
 }
 
 $SortedRecords |
@@ -631,6 +705,8 @@ $SortedRecords |
         AttributeName,
         OperationType |
     Format-Table -AutoSize
+
+Write-RunLog -Message "Completed Get-ADAdminActivity. ExitCode=$($ExitCodes.Success)"
 
 exit $ExitCodes.Success
 

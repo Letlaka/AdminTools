@@ -2,7 +2,7 @@
 
 ## Scan-ADComputers.ps1
 
-`Scan-ADComputers.ps1` writes reports to `reports/ad-computers` by default, or to `-OutputDirectory` when supplied.
+`Scan-ADComputers.ps1` writes reports to `reports/ad-computers` by default, or to `-OutputDirectory` when supplied. The default run log is written under `logs/scan-ad-computers/`.
 
 `Scan-ADComputers.ps1` can export:
 
@@ -30,10 +30,11 @@ supplied. Existing files are not overwritten unless `-ForceOverwrite` is supplie
 
 `Manage-ADUserAccounts.ps1` writes reports to
 `reports/ad-user-accounts` by default, or to
-`-OutputDirectory` when supplied.
+`-OutputDirectory` when supplied. The default run log is written under
+`logs/manage-ad-user-accounts/`.
 
 Network output paths are rejected by default unless `-AllowNetworkOutputPath` is
-supplied. Existing files are not overwritten unless `-ForceOverwrite` is supplied.
+supplied. Existing report and log files are not overwritten unless `-ForceOverwrite` is supplied.
 User list files from UNC paths are rejected unless `-AllowNetworkInputPath` is supplied.
 
 File name pattern:
@@ -81,7 +82,8 @@ Common user fields:
 ## AD Admin Activity Reports
 
 `Get-ADAdminActivity.ps1` writes a CSV report to `-OutputCsv`, or to
-`reports/ad-admin-activity` by default.
+`reports/ad-admin-activity` by default. The default run log is written under
+`logs/get-ad-admin-activity/`.
 
 File name pattern:
 
@@ -110,14 +112,14 @@ Common fields:
 
 ## AD Excel Reporting Outputs
 
-`scripts/build_ad_excel_reports.py` reads `Scan-ADComputers.ps1` CSV or JSON exports and writes Excel reporting output under `reports/<financial-year>/<run-date>/` by default.
+`scripts/build_ad_excel_reports.py` reads `Scan-ADComputers.ps1` CSV or JSON exports and writes Excel reporting output under `reports/<financial-year>/<run-date>/` by default. Logs are written under `logs/excel-reporting/<financial-year>/<run-date>/` by default.
 
 Output folders:
 
 - `source`: copies of the input scan exports
 - `consolidated`: one `AD_Dashboard_<financial-year>_<run-date>.xlsx` workbook
 - `departments`: one workbook folder per matched department
-- `logs`: `unmatched_devices.csv` for records that did not match a department
+- `logs/excel-reporting/<financial-year>/<run-date>/unmatched_devices.csv`: records that did not match a department
 
 The reporting utility requires environment-local department runtime files:
 

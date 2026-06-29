@@ -255,7 +255,7 @@ Delta report from a previous CSV export:
 
 ## Outputs
 
-Default output location is `reports/ad-computers` unless `-OutputDirectory` is supplied. The default log path is in the resolved output directory. When `-PerformanceSummary` is supplied, timing files are written as `<Servers|Workstations>_<domain>_<timestamp>_Performance.csv` and `.json`.
+Default output location is `reports/ad-computers` unless `-OutputDirectory` is supplied. The default log path is `logs/scan-ad-computers/Scan-ADComputers_<timestamp>.log` unless `-LogPath` is supplied. When `-PerformanceSummary` is supplied, timing files are written as `<Servers|Workstations>_<domain>_<timestamp>_Performance.csv` and `.json`.
 
 Common outputs:
 

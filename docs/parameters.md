@@ -12,7 +12,7 @@
 | `CredentialSecretName` | `string` | SecretManagement secret name containing a `PSCredential` |
 | `CredentialPath` | `string` | Path to a DPAPI-protected `Export-Clixml` credential file outside the repo |
 | `ComputerListPath` | `string` | Required in targeted mode |
-| `OutputDirectory` | `string` | Where exports and logs are written |
+| `OutputDirectory` | `string` | Where report exports are written |
 | `SearchBase` | `string` | Single OU/container scope |
 | `SearchBaseList` | `string[]` | Multiple OU/container scopes |
 | `ExcludeOU` | `string[]` | OUs to exclude from final results |
@@ -43,7 +43,7 @@
 | `NoProgress` | `switch` | Suppresses transient progress displays for unattended runs |
 | `NoClobber` | `switch` | Fails if an output or log file already exists |
 | `ForceOverwrite` | `switch` | Overwrites existing output or log files |
-| `AllowNetworkOutputPath` | `switch` | Allows writing reports and logs to UNC paths |
+| `AllowNetworkOutputPath` | `switch` | Allows writing reports and custom log paths to UNC paths |
 | `AllowNetworkInputPath` | `switch` | Allows reading config, list, comparison, or credential files from UNC paths |
 | `DisableCsvSanitization` | `switch` | Exports raw CSV strings without spreadsheet formula protection |
 
@@ -70,6 +70,7 @@
 | `PrivilegedGroupNames` | `string[]` | Groups used for privileged user reporting |
 | `OutputDirectory` | `string` | Where user account reports are written |
 | `OutputPrefix` | `string` | Report filename prefix |
+| `LogPath` | `string` | Custom run log file path |
 | `Unlock` | `switch` | Unlocks the selected user in `Reset` mode |
 | `Enable` | `switch` | Enables the selected user in `Reset` mode |
 | `ResetPassword` | `switch` | Resets the selected user's password |
@@ -83,9 +84,9 @@
 | `IncludeMessage` | `switch` | Includes rendered event messages in audit exports |
 | `AllowPartialResults` | `switch` | Allows event reports when some DCs cannot be queried |
 | `AllowUnverifiedDomainController` | `switch` | Uses supplied DC names without AD verification |
-| `NoClobber` | `switch` | Fails if an output file already exists |
-| `ForceOverwrite` | `switch` | Overwrites existing output files |
-| `AllowNetworkOutputPath` | `switch` | Allows writing reports to UNC paths |
+| `NoClobber` | `switch` | Fails if an output or log file already exists |
+| `ForceOverwrite` | `switch` | Overwrites existing output or log files |
+| `AllowNetworkOutputPath` | `switch` | Allows writing reports and custom log paths to UNC paths |
 | `AllowNetworkInputPath` | `switch` | Allows reading user list or credential files from UNC paths |
 | `DisableCsvSanitization` | `switch` | Exports raw CSV strings without spreadsheet formula protection |
 
@@ -102,13 +103,14 @@
 | `AdminSamAccountNames` | `string[]` | Extra admin account names for `AdminOnly` matching |
 | `PrivilegedGroupNames` | `string[]` | Groups used to resolve current privileged admins |
 | `OutputCsv` | `string` | CSV report path |
+| `LogPath` | `string` | Custom run log file path |
 | `IncludeMessage` | `switch` | Includes rendered event messages in the export |
 | `MaxAttributeValueLength` | `int` | Maximum exported event attribute value length |
 | `MaxEventsPerDomainController` | `int` | Optional event limit per DC; `0` means no explicit limit |
 | `AllowPartialResults` | `switch` | Allows export when some DCs cannot be queried |
-| `NoClobber` | `switch` | Fails if the output CSV already exists |
-| `ForceOverwrite` | `switch` | Overwrites an existing output CSV |
-| `AllowNetworkOutputPath` | `switch` | Allows writing the CSV report to a UNC path |
+| `NoClobber` | `switch` | Fails if the output CSV or log file already exists |
+| `ForceOverwrite` | `switch` | Overwrites an existing output CSV or log file |
+| `AllowNetworkOutputPath` | `switch` | Allows writing the CSV report and custom log paths to UNC paths |
 | `AllowNetworkInputPath` | `switch` | Allows reading credential files from UNC paths |
 | `AllowUnverifiedDomainController` | `switch` | Uses supplied DC names without AD discovery verification |
 | `DisableCsvSanitization` | `switch` | Exports raw CSV strings without spreadsheet formula protection |
