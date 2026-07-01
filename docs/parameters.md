@@ -6,11 +6,14 @@
 |---|---|---|
 | `ComputerType` | `Server` or `Workstation` | Selects the AD computer category |
 | `Mode` | `Full` or `Targeted` | Full scan or list-driven scan |
-| `DomainController` | `string` | Domain controller or LDAP server to query; discovered from AD when omitted |
-| `DomainName` | `string` | Domain suffix used when building FQDNs; discovered from AD when omitted |
-| `Credential` | `PSCredential` | Credential for AD query and optional remote inventory |
+| `DomainController` | `string` | Writable DC FQDN to query. From VPN/non-domain clients, supply it with `DomainName`; it must be inside that DNS suffix and is verified against discovered writable DCs |
+| `DomainName` | `string` | AD DNS root used to bootstrap discovery from VPN/non-domain machines; must match the discovered AD DNS root |
+| `Credential` | `PSCredential` | Credential for AD query only; remote inventory uses its own credential |
 | `CredentialSecretName` | `string` | SecretManagement secret name containing a `PSCredential` |
 | `CredentialPath` | `string` | Path to a DPAPI-protected `Export-Clixml` credential file outside the repo |
+| `RemoteInventoryCredential` | `PSCredential` | Separate least-privilege credential for CIM remote inventory |
+| `RemoteInventoryCredentialSecretName` | `string` | SecretManagement secret name containing the remote inventory `PSCredential` |
+| `RemoteInventoryCredentialPath` | `string` | Path to a DPAPI-protected remote inventory credential file outside the repo |
 | `ComputerListPath` | `string` | Required in targeted mode |
 | `OutputDirectory` | `string` | Where report exports are written |
 | `SearchBase` | `string` | Single OU/container scope |
@@ -66,7 +69,8 @@
 | `DaysBack` | `int` | Event query lookback window |
 | `PasswordAgeWarningDays` | `int` | Password age threshold for warning status |
 | `StaleUserDays` | `int` | Last-logon threshold for stale-user reporting |
-| `MaxEventsPerDomainController` | `int` | Optional event limit per DC; `0` means no explicit limit |
+| `MaxEventsPerDomainController` | `int` | Event limit per DC; defaults to `100000` |
+| `UnlimitedEvents` | `switch` | Explicitly disables the per-DC event cap |
 | `PrivilegedGroupNames` | `string[]` | Groups used for privileged user reporting |
 | `OutputDirectory` | `string` | Where user account reports are written |
 | `OutputPrefix` | `string` | Report filename prefix |
@@ -106,7 +110,8 @@
 | `LogPath` | `string` | Custom run log file path |
 | `IncludeMessage` | `switch` | Includes rendered event messages in the export |
 | `MaxAttributeValueLength` | `int` | Maximum exported event attribute value length |
-| `MaxEventsPerDomainController` | `int` | Optional event limit per DC; `0` means no explicit limit |
+| `MaxEventsPerDomainController` | `int` | Event limit per DC; defaults to `100000` |
+| `UnlimitedEvents` | `switch` | Explicitly disables the per-DC event cap |
 | `AllowPartialResults` | `switch` | Allows export when some DCs cannot be queried |
 | `NoClobber` | `switch` | Fails if the output CSV or log file already exists |
 | `ForceOverwrite` | `switch` | Overwrites an existing output CSV or log file |

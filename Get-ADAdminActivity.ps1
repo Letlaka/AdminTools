@@ -56,6 +56,12 @@ using module ./AdminToolsCommon.psm1
 
 .PARAMETER CredentialPath
     Path to a PSCredential exported with Export-Clixml. Credential files must be outside the repository directory.
+
+.PARAMETER MaxEventsPerDomainController
+    Maximum Security events read from each Domain Controller. Defaults to 100000.
+
+.PARAMETER UnlimitedEvents
+    Explicitly disables the per-Domain Controller Security event cap.
 #>
 
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
@@ -96,8 +102,10 @@ param(
     [ValidateRange(1, 10000)]
     [int]$MaxAttributeValueLength = 500,
 
-    [ValidateRange(0, 1000000)]
-    [int]$MaxEventsPerDomainController = 0,
+    [ValidateRange(1, 1000000)]
+    [int]$MaxEventsPerDomainController = 100000,
+
+    [switch]$UnlimitedEvents,
 
     [switch]$AllowPartialResults,
 
@@ -140,6 +148,7 @@ $RunStartedAt = Get-Date
 $RunTimestamp = $RunStartedAt.ToString("yyyyMMddHHmmss")
 $SecurityAuditProviderName = "Microsoft-Windows-Security-Auditing"
 $StartTime = $RunStartedAt.AddDays(-1 * $DaysBack)
+$EffectiveMaxEventsPerDomainController = if ($UnlimitedEvents.IsPresent) { 0 } else { $MaxEventsPerDomainController }
 
 if (-not $PSBoundParameters.ContainsKey("OutputCsv")) {
     $DefaultOutputRoot = Join-Path -Path $PSScriptRoot -ChildPath "reports\ad-admin-activity"
@@ -347,23 +356,7 @@ function Get-CurrentPrivilegedAdminName {
 
     return $AdminNameSet
 }
-
-function Get-ResolvedOutputPath {
-    param(
-        [string]$Path
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Path)) {
-        return $null
-    }
-
-    if ([System.IO.Path]::IsPathRooted($Path)) {
-        return $Path
-    }
-
-    return (Join-Path -Path (Get-Location).Path -ChildPath $Path)
-}
-
+
 function Test-IsCsvPath {
     param(
         [string]$Path
@@ -519,6 +512,14 @@ else {
 Initialize-RunLog -Path $LogPath
 Write-Information "Run log: $LogPath"
 Write-RunLog -Message "Starting Get-ADAdminActivity. DaysBack=$DaysBack; AdminOnly=$($AdminOnly.IsPresent); OutputCsv=$OutputCsv"
+
+if ($DaysBack -gt 90 -and -not $PSBoundParameters.ContainsKey("MaxEventsPerDomainController") -and -not $UnlimitedEvents.IsPresent) {
+    Write-Warning "DaysBack is longer than 90 days and MaxEventsPerDomainController was not explicitly set. Using default cap of $MaxEventsPerDomainController events per Domain Controller; use -UnlimitedEvents only after capacity planning."
+}
+
+if ($UnlimitedEvents.IsPresent) {
+    Write-Warning "UnlimitedEvents disables the Security event cap. Large DaysBack windows can consume significant time and memory."
+}
 Assert-SafeDomainControllerNames -Names $DomainControllers
 Assert-SafeTextValues -Purpose "AdminSamAccountNames" -Values $AdminSamAccountNames -MaximumLength 256
 Assert-SafeTextValues -Purpose "PrivilegedGroupNames" -Values $PrivilegedGroupNames -MaximumLength 256
@@ -549,8 +550,8 @@ if ($AdminOnly) {
     }
 }
 
-if ($AdminOnly -and $MaxEventsPerDomainController -gt 0) {
-    Write-Warning "AdminOnly filtering is applied after MaxEventsPerDomainController cap. Set MaxEventsPerDomainController to 0 to ensure all relevant events are considered."
+if ($AdminOnly -and $EffectiveMaxEventsPerDomainController -gt 0) {
+    Write-Warning "AdminOnly filtering is applied after MaxEventsPerDomainController cap. Increase the cap or use -UnlimitedEvents only when complete uncapped results are required."
 }
 
 $SuccessfulDomainControllers = New-Object System.Collections.Generic.List[string]
@@ -561,27 +562,34 @@ $AllRecords = foreach ($DomainController in $ResolvedDomainControllers) {
 
     try {
         # NOTE: MaxEventsPerDomainController caps the raw event pull before
-        # per-user filtering is applied. If this limit is set very low and
-        # the target user's events are not among the first N events returned,
-        # they will be silently omitted. Set MaxEventsPerDomainController to
-        # 0 (no limit) when querying for a specific user or when using
-        # AdminOnly to ensure complete results.
-        $SecurityEvents = Get-SecurityAuditEvents `
+        # AdminOnly filtering is applied. If this limit is set very low and
+        # the target events are not among the first N events returned, they
+        # will be omitted. Increase MaxEventsPerDomainController or use
+        # -UnlimitedEvents only when complete uncapped results are required.
+        $SecurityEventQuery = Get-SecurityAuditEvents `
             -ComputerName $DomainController `
             -Ids $EventIds `
             -ProviderName $SecurityAuditProviderName `
             -StartDate $StartTime `
-            -MaxEvents $MaxEventsPerDomainController `
-            -Credential $Credential
+            -MaxEvents $EffectiveMaxEventsPerDomainController `
+            -Credential $Credential `
+            -ProcessEvent {
+                param($EventRecord)
 
-        $RawRecords = @($SecurityEvents | ForEach-Object {
-            ConvertTo-AdActivityRecord `
-                -EventRecord $_ `
-                -DomainController $DomainController `
-                -IncludeRenderedMessage:$IncludeMessage `
-                -AttributeValueLimit $MaxAttributeValueLength
-        })
+                ConvertTo-AdActivityRecord `
+                    -EventRecord $EventRecord `
+                    -DomainController $DomainController `
+                    -IncludeRenderedMessage:$IncludeMessage `
+                    -AttributeValueLimit $MaxAttributeValueLength
+            }
 
+        if ($SecurityEventQuery.LimitReached) {
+            $LimitMessage = "Security event query reached MaxEventsPerDomainController=$($SecurityEventQuery.MaxEventsPerDomainController) on $DomainController; output records include EventQueryLimitReached metadata."
+            Write-Warning $LimitMessage
+            Write-RunLog -Message $LimitMessage -Level "Warning"
+        }
+
+        $RawRecords = @($SecurityEventQuery.Records)
         $DomainControllerRecords = if ($AdminOnly) {
             @($RawRecords | Where-Object {
                 $Record = $_
@@ -703,13 +711,14 @@ $SortedRecords |
         ActorAccount,
         TargetObject,
         AttributeName,
-        OperationType |
+        OperationType,
+        EventQueryMaxEventsPerDomainController,
+        EventQueryLimitReached,
+        EventQueryEventsReadFromDomainController,
+        EventQueryUnlimitedEvents |
     Format-Table -AutoSize
 
 Write-RunLog -Message "Completed Get-ADAdminActivity. ExitCode=$($ExitCodes.Success)"
 
 exit $ExitCodes.Success
-
-
-
 

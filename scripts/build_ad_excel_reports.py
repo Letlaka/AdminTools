@@ -11,6 +11,7 @@ from pathlib import Path
 from lib.department_mapping import DepartmentMatcher, load_departments, load_dept_codes
 from lib.financial_year import get_financial_year, get_run_folder
 from lib.report_model import build_report_bundle, unmatched_records
+from lib.spreadsheet_safety import safe_cell_value
 from lib.scan_ad_input import load_scan_records, validate_scan_records
 
 
@@ -143,14 +144,14 @@ def write_unmatched_log(path: Path, records: list[dict[str, object]]) -> None:
         for record in records:
             writer.writerow(
                 [
-                    record.get("ComputerType"),
-                    record.get("Name"),
-                    record.get("CN"),
-                    record.get("DNSHostName"),
-                    record.get("OUPath"),
-                    record.get("DistinguishedName"),
-                    record.get("Description"),
-                    record.get("SourceFile"),
+                    safe_cell_value(record.get("ComputerType")),
+                    safe_cell_value(record.get("Name")),
+                    safe_cell_value(record.get("CN")),
+                    safe_cell_value(record.get("DNSHostName")),
+                    safe_cell_value(record.get("OUPath")),
+                    safe_cell_value(record.get("DistinguishedName")),
+                    safe_cell_value(record.get("Description")),
+                    safe_cell_value(record.get("SourceFile")),
                 ]
             )
 

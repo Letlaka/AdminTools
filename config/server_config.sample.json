@@ -1,5 +1,7 @@
 {
   "CredentialSecretName": "ExampleADCredential",
+  "RemoteInventoryCredentialSecretName": "ExampleRemoteInventoryCredential",
+  "DomainName": "example.corp.local",
   "DomainController": "dc01.example.corp.local",
   "ComputerType": "Server",
   "Mode": "Full",

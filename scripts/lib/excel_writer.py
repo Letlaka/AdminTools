@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from lib.report_model import LEGACY_SERVER_SPOTLIGHT_BUCKETS, serialize_for_sheet
+from lib.spreadsheet_safety import safe_cell_value
 
 try:
     from openpyxl import Workbook
@@ -49,7 +50,15 @@ def safe_sheet_name(value: str, existing: set[str]) -> str:
 def _format_value(value: object) -> object:
     if isinstance(value, datetime):
         return value
-    return value
+    return safe_cell_value(value)
+
+
+def _write_cell(worksheet, row: int, column: int, value: object):
+    formatted_value = _format_value(value)
+    cell = worksheet.cell(row=row, column=column, value=formatted_value)
+    if isinstance(formatted_value, str):
+        cell.data_type = "s"
+    return cell
 
 
 def _autofit_columns(worksheet) -> None:
@@ -71,18 +80,18 @@ def _write_rows_table(
     highlight_legacy_column: str | None = None,
     spotlight_column: str | None = None,
 ) -> tuple[int, int, list[str]]:
-    worksheet.cell(row=start_row, column=1, value=title)
+    _write_cell(worksheet, row=start_row, column=1, value=title)
     worksheet.cell(row=start_row, column=1).font = Font(bold=True, size=14)
 
     headers = list(rows[0].keys()) if rows else []
     header_row = start_row + 2
 
     if not headers:
-        worksheet.cell(row=header_row, column=1, value="No records")
+        _write_cell(worksheet, row=header_row, column=1, value="No records")
         return header_row, header_row, []
 
     for column_index, header in enumerate(headers, start=1):
-        cell = worksheet.cell(row=header_row, column=column_index, value=header)
+        cell = _write_cell(worksheet, row=header_row, column=column_index, value=header)
         cell.font = Font(bold=True)
         cell.fill = HEADER_FILL
 
@@ -101,7 +110,7 @@ def _write_rows_table(
         fill = SPOTLIGHT_FILL if is_spotlight else LEGACY_FILL if is_legacy else None
 
         for column_index, header in enumerate(headers, start=1):
-            cell = worksheet.cell(row=current_row, column=column_index, value=_format_value(row.get(header)))
+            cell = _write_cell(worksheet, row=current_row, column=column_index, value=row.get(header))
             if fill is not None:
                 cell.fill = fill
 
@@ -150,20 +159,20 @@ def _add_bar_chart(
 def _write_table(worksheet, rows: list[dict[str, object]], title: str | None = None) -> None:
     current_row = 1
     if title:
-        worksheet.cell(row=current_row, column=1, value=title)
+        _write_cell(worksheet, row=current_row, column=1, value=title)
         worksheet.cell(row=current_row, column=1).font = Font(bold=True, size=14)
         current_row += 2
 
     headers = list(rows[0].keys()) if rows else []
     if not headers:
-        worksheet.cell(row=current_row, column=1, value="No records")
+        _write_cell(worksheet, row=current_row, column=1, value="No records")
         return
 
     header_row = current_row
     data_start_row = current_row + 1
 
     for column_index, header in enumerate(headers, start=1):
-        cell = worksheet.cell(row=header_row, column=column_index, value=header)
+        cell = _write_cell(worksheet, row=header_row, column=column_index, value=header)
         cell.font = Font(bold=True)
         cell.fill = HEADER_FILL
 
@@ -171,12 +180,12 @@ def _write_table(worksheet, rows: list[dict[str, object]], title: str | None = N
     for row_index, row in enumerate(rows, start=data_start_row):
         row_is_legacy = bool(row.get("OSIsLegacy"))
         for column_index, header in enumerate(headers, start=1):
-            cell = worksheet.cell(row=row_index, column=column_index, value=_format_value(row.get(header)))
+            cell = _write_cell(worksheet, row=row_index, column=column_index, value=row.get(header))
             if row_is_legacy:
                 cell.fill = LEGACY_FILL
 
         if os_legacy_index is not None:
-            worksheet.cell(row=row_index, column=os_legacy_index).value = "Yes" if row_is_legacy else "No"
+            _write_cell(worksheet, row=row_index, column=os_legacy_index, value="Yes" if row_is_legacy else "No")
 
     worksheet.freeze_panes = worksheet.cell(row=data_start_row, column=1)
     worksheet.auto_filter.ref = worksheet.dimensions

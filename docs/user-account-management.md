@@ -102,7 +102,8 @@ Event controls:
 - `-IncludeEvents`
 - `-DaysBack`
 - `-DomainControllers`
-- `-MaxEventsPerDomainController`
+- `-MaxEventsPerDomainController` (defaults to 100,000 events per DC)
+- `-UnlimitedEvents` to explicitly disable the per-DC event cap
 - `-AllowPartialResults`
 - `-AllowUnverifiedDomainController`
 - `-IncludeMessage`

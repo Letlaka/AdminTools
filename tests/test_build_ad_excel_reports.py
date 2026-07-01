@@ -165,6 +165,34 @@ class BuildAdExcelReportsTests(unittest.TestCase):
         self.assertEqual(calls["departments"], [])
         self.assertIn("--department is required", stderr.getvalue())
 
+    def test_unmatched_log_sanitizes_formula_like_ad_strings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "unmatched.csv"
+            build_ad_excel_reports.write_unmatched_log(
+                path,
+                [
+                    {
+                        "ComputerType": "Workstation",
+                        "Name": "=cmd|' /C calc'!A0",
+                        "CN": "\tTabbedName",
+                        "DNSHostName": "+host.example.local",
+                        "OUPath": "-Danger",
+                        "DistinguishedName": "@Danger",
+                        "Description": "safe text",
+                        "SourceFile": "scan.csv",
+                    }
+                ],
+            )
+
+            with path.open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.reader(handle))
+
+            self.assertEqual(rows[1][1], "'=cmd|' /C calc'!A0")
+            self.assertEqual(rows[1][2], "'\tTabbedName")
+            self.assertEqual(rows[1][3], "'+host.example.local")
+            self.assertEqual(rows[1][4], "'-Danger")
+            self.assertEqual(rows[1][5], "'@Danger")
+            self.assertEqual(rows[1][6], "safe text")
     def test_unmatched_log_is_written_under_central_excel_reporting_logs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

@@ -63,6 +63,12 @@ using module ./AdminToolsCommon.psm1
 .PARAMETER CredentialPath
     Path to a PSCredential exported with Export-Clixml. Credential files must be outside the repository directory.
 
+.PARAMETER MaxEventsPerDomainController
+    Maximum Security events read from each Domain Controller. Defaults to 100000.
+
+.PARAMETER UnlimitedEvents
+    Explicitly disables the per-Domain Controller Security event cap.
+
 .NOTES
     Run from an elevated PowerShell session using an account allowed to query AD.
     Event audit features require permission to read Security logs on Domain
@@ -122,8 +128,10 @@ param(
     [ValidateRange(1, 3650)]
     [int]$StaleUserDays = 90,
 
-    [ValidateRange(0, 1000000)]
-    [int]$MaxEventsPerDomainController = 0,
+    [ValidateRange(1, 1000000)]
+    [int]$MaxEventsPerDomainController = 100000,
+
+    [switch]$UnlimitedEvents,
 
     [ValidateRange(1, 10000)]
     [int]$MaxAttributeValueLength = 500,
@@ -199,6 +207,7 @@ $RunStartedAt = Get-Date
 $RunTimestamp = $RunStartedAt.ToString("yyyyMMddHHmmss")
 $SecurityAuditProviderName = "Microsoft-Windows-Security-Auditing"
 $StartTime = $RunStartedAt.AddDays(-1 * $DaysBack)
+$EffectiveMaxEventsPerDomainController = if ($UnlimitedEvents.IsPresent) { 0 } else { $MaxEventsPerDomainController }
 
 $UserEventIds = @(
     4720, # User created
@@ -226,6 +235,13 @@ $UserEventActionMap = @{
     4781 = "Account name changed"
 }
 
+if ($DaysBack -gt 90 -and -not $PSBoundParameters.ContainsKey("MaxEventsPerDomainController") -and -not $UnlimitedEvents.IsPresent) {
+    Write-Warning "DaysBack is longer than 90 days and MaxEventsPerDomainController was not explicitly set. Using default cap of $MaxEventsPerDomainController events per Domain Controller; use -UnlimitedEvents only after capacity planning."
+}
+
+if ($UnlimitedEvents.IsPresent) {
+    Write-Warning "UnlimitedEvents disables the Security event cap. Large DaysBack windows can consume significant time and memory."
+}
 if ($ForceOverwrite -and $NoClobber) {
     throw "ForceOverwrite and NoClobber cannot be used together."
 }
@@ -375,8 +391,8 @@ function Get-UserAuditEvents {
         throw "No writable Domain Controllers were found. Verify AD connectivity and that the account has permission to enumerate domain controllers."
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($Identity) -and $MaxEventsPerDomainController -gt 0) {
-        Write-Warning "UserAudit event filtering is applied after MaxEventsPerDomainController cap. Set MaxEventsPerDomainController to 0 to ensure all events for the target user are returned."
+    if (-not [string]::IsNullOrWhiteSpace($Identity) -and $EffectiveMaxEventsPerDomainController -gt 0) {
+        Write-Warning "UserAudit event filtering is applied after MaxEventsPerDomainController cap. Increase the cap or use -UnlimitedEvents only when complete uncapped results are required."
     }
 
     $SuccessfulDomainControllers = New-Object System.Collections.Generic.List[string]
@@ -389,26 +405,34 @@ function Get-UserAuditEvents {
             # NOTE: MaxEventsPerDomainController caps the raw event pull before
             # per-user filtering is applied. If this limit is set very low and
             # the target user's events are not among the first N events returned,
-            # they will be silently omitted. Set MaxEventsPerDomainController to
-            # 0 (no limit) when querying for a specific user or when using
-            # AdminOnly to ensure complete results.
-            $SecurityEvents = Get-SecurityAuditEvents `
+            # they will be omitted. Increase MaxEventsPerDomainController or
+            # use -UnlimitedEvents only when complete uncapped results are required.
+            $SecurityEventQuery = Get-SecurityAuditEvents `
                 -ComputerName $DomainController `
                 -Ids $UserEventIds `
                 -ProviderName $SecurityAuditProviderName `
                 -StartDate $StartTime `
-                -MaxEvents $MaxEventsPerDomainController `
-                -Credential $Credential
+                -MaxEvents $EffectiveMaxEventsPerDomainController `
+                -Credential $Credential `
+                -ProcessEvent {
+                    param($EventRecord)
+
+                    ConvertTo-UserAuditRecord `
+                        -EventRecord $EventRecord `
+                        -DomainController $DomainController `
+                        -IncludeRenderedMessage:$IncludeMessage
+                }
+
+            if ($SecurityEventQuery.LimitReached) {
+                $LimitMessage = "Security event query reached MaxEventsPerDomainController=$($SecurityEventQuery.MaxEventsPerDomainController) on $DomainController; output records include EventQueryLimitReached metadata."
+                Write-Warning $LimitMessage
+                Write-RunLog -Message $LimitMessage -Level "Warning"
+            }
 
             [void]$SuccessfulDomainControllers.Add($DomainController)
-            $SecurityEvents | ForEach-Object {
-                $Record = ConvertTo-UserAuditRecord `
-                    -EventRecord $_ `
-                    -DomainController $DomainController `
-                    -IncludeRenderedMessage:$IncludeMessage
-
-                if (Test-UserMatchesAuditRecord -Record $Record -User $User) {
-                    $Record
+            $SecurityEventQuery.Records | ForEach-Object {
+                if (Test-UserMatchesAuditRecord -Record $_ -User $User) {
+                    $_
                 }
             }
         }
@@ -440,6 +464,7 @@ function Get-UserAuditEvents {
         Write-Warning "$PartialMessage. Exporting partial results because AllowPartialResults was specified."
     }
 
+    # Event audit records include EventQueryMaxEventsPerDomainController, EventQueryLimitReached, EventQueryEventsReadFromDomainController, and EventQueryUnlimitedEvents metadata.
     return @($AllRecords | Sort-Object TimeCreated -Descending)
 }
 
@@ -1336,8 +1361,4 @@ if ($ExportedPaths.Count -gt 0) {
 Write-RunLog -Message "Completed Manage-ADUserAccounts. ExitCode=$($ExitCodes.Success)"
 
 exit $ExitCodes.Success
-
-
-
-
 

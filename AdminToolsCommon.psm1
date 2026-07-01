@@ -214,8 +214,64 @@ function Get-SecurityAuditEvents {
         [string]$ProviderName,
         [datetime]$StartDate,
         [int]$MaxEvents,
-        [PSCredential]$Credential
+        [PSCredential]$Credential,
+        [scriptblock]$ProcessEvent
     )
+
+    $ProcessedRecords = New-Object System.Collections.Generic.List[object]
+    $EventsRead = 0
+    $LimitReached = $false
+    $UnlimitedEvents = $MaxEvents -le 0
+
+    function Add-SecurityEventQueryMetadata {
+        param(
+            [object]$Record,
+            [int]$MaxEventsPerDomainController,
+            [bool]$LimitReached,
+            [int]$EventsReadFromDomainController,
+            [bool]$UnlimitedEvents
+        )
+
+        if ($null -eq $Record) {
+            return
+        }
+
+        $Metadata = @{
+            EventQueryMaxEventsPerDomainController   = $MaxEventsPerDomainController
+            EventQueryLimitReached                   = $LimitReached
+            EventQueryEventsReadFromDomainController = $EventsReadFromDomainController
+            EventQueryUnlimitedEvents                = $UnlimitedEvents
+        }
+
+        foreach ($Entry in $Metadata.GetEnumerator()) {
+            $ExistingProperty = $Record.PSObject.Properties[$Entry.Key]
+            if ($ExistingProperty) {
+                $ExistingProperty.Value = $Entry.Value
+            }
+            else {
+                $Record | Add-Member -NotePropertyName $Entry.Key -NotePropertyValue $Entry.Value
+            }
+        }
+    }
+
+    function Complete-SecurityEventQuery {
+        foreach ($Record in $ProcessedRecords) {
+            Add-SecurityEventQueryMetadata `
+                -Record $Record `
+                -MaxEventsPerDomainController $MaxEvents `
+                -LimitReached $LimitReached `
+                -EventsReadFromDomainController $EventsRead `
+                -UnlimitedEvents $UnlimitedEvents
+        }
+
+        [pscustomobject]@{
+            Records                        = @($ProcessedRecords.ToArray())
+            EventsReadFromDomainController = $EventsRead
+            MaxEventsPerDomainController   = $MaxEvents
+            LimitReached                   = $LimitReached
+            UnlimitedEvents                = $UnlimitedEvents
+        }
+    }
 
     if (-not $Credential) {
         $GetWinEventParameters = @{
@@ -229,11 +285,29 @@ function Get-SecurityAuditEvents {
             ErrorAction    = "Stop"
         }
 
-        if ($MaxEvents -gt 0) {
-            $GetWinEventParameters["MaxEvents"] = $MaxEvents
+        foreach ($EventRecord in Get-WinEvent @GetWinEventParameters) {
+            try {
+                if ($MaxEvents -gt 0 -and $EventsRead -ge $MaxEvents) {
+                    $LimitReached = $true
+                    break
+                }
+
+                $EventsRead++
+                $ProcessedOutput = if ($ProcessEvent) { & $ProcessEvent $EventRecord } else { $EventRecord }
+                foreach ($ProcessedRecord in @($ProcessedOutput)) {
+                    if ($null -ne $ProcessedRecord) {
+                        [void]$ProcessedRecords.Add($ProcessedRecord)
+                    }
+                }
+            }
+            finally {
+                if ($null -ne $EventRecord) {
+                    $EventRecord.Dispose()
+                }
+            }
         }
 
-        return @(Get-WinEvent @GetWinEventParameters)
+        return Complete-SecurityEventQuery
     }
 
     $CredentialName = Split-CredentialUserName -Credential $Credential
@@ -263,7 +337,6 @@ function Get-SecurityAuditEvents {
         $Query.ReverseDirection = $true
 
         $Reader = [System.Diagnostics.Eventing.Reader.EventLogReader]::new($Query)
-        $Events = New-Object System.Collections.Generic.List[object]
 
         while ($true) {
             $EventRecord = $Reader.ReadEvent()
@@ -271,14 +344,28 @@ function Get-SecurityAuditEvents {
                 break
             }
 
-            [void]$Events.Add($EventRecord)
+            try {
+                if ($MaxEvents -gt 0 -and $EventsRead -ge $MaxEvents) {
+                    $LimitReached = $true
+                    break
+                }
 
-            if ($MaxEvents -gt 0 -and $Events.Count -ge $MaxEvents) {
-                break
+                $EventsRead++
+                $ProcessedOutput = if ($ProcessEvent) { & $ProcessEvent $EventRecord } else { $EventRecord }
+                foreach ($ProcessedRecord in @($ProcessedOutput)) {
+                    if ($null -ne $ProcessedRecord) {
+                        [void]$ProcessedRecords.Add($ProcessedRecord)
+                    }
+                }
+            }
+            finally {
+                if ($null -ne $EventRecord) {
+                    $EventRecord.Dispose()
+                }
             }
         }
 
-        return @($Events.ToArray())
+        return Complete-SecurityEventQuery
     }
     finally {
         if ($null -ne $Reader) {
@@ -345,6 +432,22 @@ function Test-IsUncPath {
     catch {
         return $Path.StartsWith("\\", [System.StringComparison]::Ordinal)
     }
+}
+
+function Get-ResolvedOutputPath {
+    param(
+        [string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $null
+    }
+
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return $Path
+    }
+
+    return (Join-Path -Path (Get-Location).Path -ChildPath $Path)
 }
 
 function Test-IsSafeDnsName {
@@ -603,7 +706,4 @@ function Get-WithRetry {
 }
 
 Export-ModuleMember -Function *
-
-
-
 

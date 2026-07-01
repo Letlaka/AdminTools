@@ -70,6 +70,37 @@ class ExcelWriterTests(unittest.TestCase):
             last_seen_value = all_servers.cell(row=4, column=headers.index("LastSeenDate") + 1).value
             self.assertEqual(last_seen_value.date() if hasattr(last_seen_value, "date") else last_seen_value, date(2026, 6, 20))
 
+    def test_sanitizes_formula_like_ad_strings_in_workbook_cells(self) -> None:
+        from lib.excel_writer import create_consolidated_workbook
+
+        records = [
+            {
+                "ComputerType": "Server",
+                "CN": "SRV01",
+                "DNSHostName": "srv01.example.local",
+                "OUPath": "example/Health",
+                "DistinguishedName": "CN=SRV01,OU=Health,DC=example,DC=local",
+                "OperatingSystem": "Windows Server 2022",
+                "Description": "=cmd|' /C calc'!A0",
+            }
+        ]
+        matcher = DepartmentMatcher(departments=["Health"], code_map={})
+        bundle = build_report_bundle(records=records, matcher=matcher, departments=["Health"])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "dashboard.xlsx"
+            create_consolidated_workbook(
+                output_path=path,
+                bundle=bundle,
+                financial_year="FY2026-2027",
+                run_date_label=date(2026, 6, 25).isoformat(),
+            )
+            workbook = load_workbook(path)
+            all_servers = workbook["All Servers"]
+            headers = [cell.value for cell in all_servers[3]]
+            description_cell = all_servers.cell(row=4, column=headers.index("Description") + 1)
+            self.assertEqual(description_cell.value, "'=cmd|' /C calc'!A0")
+            self.assertEqual(description_cell.data_type, "s")
     def test_dashboard_places_charts_next_to_source_tables(self) -> None:
         from lib.excel_writer import create_consolidated_workbook
 

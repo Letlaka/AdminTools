@@ -16,6 +16,12 @@ using module ./AdminToolsCommon.psm1
     Full scans the selected computer type across the query scope.
     Targeted scans only the names listed in ComputerListPath.
 
+.PARAMETER DomainController
+    Optional writable Domain Controller to use after domain discovery verifies it against AD.
+
+.PARAMETER DomainName
+    Optional AD DNS root. When supplied with DomainController from a VPN or non-domain client, DomainController is used as the bootstrap ADWS server and the discovered AD DNS root must match DomainName.
+
 .PARAMETER ComputerListPath
     Path to a text file containing computer names or FQDNs, one per line.
     Required when Mode is Targeted.
@@ -76,6 +82,15 @@ using module ./AdminToolsCommon.psm1
     SecretManagement secret name containing a PSCredential.
 .PARAMETER CredentialPath
     Path to a PSCredential exported with Export-Clixml. Credential files must be outside the repository directory.
+
+.PARAMETER RemoteInventoryCredential
+    Separate least-privilege credential for CIM remote inventory. The AD query credential is not reused for remote inventory.
+
+.PARAMETER RemoteInventoryCredentialSecretName
+    SecretManagement secret name containing the remote inventory PSCredential.
+
+.PARAMETER RemoteInventoryCredentialPath
+    Path to a remote inventory PSCredential exported with Export-Clixml. Credential files must be outside the repository directory.
 .PARAMETER ConfigPath
     Optional path to a Json configuration file.
 
@@ -131,7 +146,7 @@ using module ./AdminToolsCommon.psm1
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
     "PSAvoidUsingPlainTextForPassword",
     "",
-    Justification = "CredentialSecretName is a SecretManagement lookup key and CredentialPath is a file path; neither parameter carries a password value."
+    Justification = "CredentialSecretName and RemoteInventoryCredentialSecretName are SecretManagement lookup keys; CredentialPath and RemoteInventoryCredentialPath are file paths. None of these parameters carries a password value."
 )]
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
@@ -157,6 +172,15 @@ param(
 
     [Parameter(Mandatory = $false)]
     [string]$CredentialPath,
+
+    [Parameter(Mandatory = $false)]
+    [PSCredential]$RemoteInventoryCredential,
+
+    [Parameter(Mandatory = $false)]
+    [string]$RemoteInventoryCredentialSecretName,
+
+    [Parameter(Mandatory = $false)]
+    [string]$RemoteInventoryCredentialPath,
 
     [Parameter(Mandatory = $false)]
     [string]$ComputerListPath,
@@ -425,6 +449,15 @@ function Test-IsInDnsSuffix {
     )
 }
 
+function Test-IsSafeShortComputerName {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name
+    )
+
+    return $Name -match '^[A-Za-z0-9][A-Za-z0-9_-]{0,14}$'
+}
+
 function Assert-SafeDnsName {
     param(
         [Parameter(Mandatory = $true)]
@@ -437,6 +470,101 @@ function Assert-SafeDnsName {
     if (-not (Test-IsSafeDnsName -Name $Name)) {
         Write-ErrorAndExit -Message "$Purpose contains invalid DNS name characters or length: $Name" -CodeKey Validation
     }
+}
+
+function Get-VerifiedDomainControllerName {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$DomainController,
+
+        [Parameter(Mandatory = $true)]
+        [PSCredential]$Credential,
+
+        [Parameter(Mandatory = $false)]
+        [string]$DiscoveryServer
+    )
+
+    Assert-SafeDnsName -Name $DomainController -Purpose "DomainController"
+
+    $domainControllerDiscoveryParameters = @{
+        Filter      = "*"
+        Credential  = $Credential
+        ErrorAction = "Stop"
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($DiscoveryServer)) {
+        Assert-SafeDnsName -Name $DiscoveryServer -Purpose "DomainControllerDiscoveryServer"
+        $domainControllerDiscoveryParameters["Server"] = $DiscoveryServer
+    }
+
+    try {
+        $discoveredDomainControllers = @(Get-ADDomainController @domainControllerDiscoveryParameters |
+                Where-Object { -not $_.IsReadOnly })
+    }
+    catch {
+        Write-ErrorAndExit -Message "Failed to verify DomainController '$DomainController' against discovered writable Domain Controllers: $($_.Exception.Message)" -CodeKey ADQuery
+    }
+
+    $discoveredNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($discoveredDomainController in $discoveredDomainControllers) {
+        foreach ($name in @($discoveredDomainController.HostName, $discoveredDomainController.Name)) {
+            if ([string]::IsNullOrWhiteSpace([string]$name)) {
+                continue
+            }
+
+            [void]$discoveredNames.Add([string]$name)
+            [void]$discoveredNames.Add(([string]$name -split '\.')[0])
+        }
+    }
+
+    if (-not $discoveredNames.Contains($DomainController)) {
+        Write-ErrorAndExit -Message "Provided DomainController '$DomainController' was not found in discovered writable Domain Controllers." -CodeKey Validation
+    }
+
+    foreach ($discoveredDomainController in $discoveredDomainControllers) {
+        if ($DomainController.Equals([string]$discoveredDomainController.HostName, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return [string]$discoveredDomainController.HostName
+        }
+
+        if ($DomainController.Equals([string]$discoveredDomainController.Name, [System.StringComparison]::OrdinalIgnoreCase) -or $DomainController.Equals(([string]$discoveredDomainController.HostName -split '\.')[0], [System.StringComparison]::OrdinalIgnoreCase)) {
+            return [string]$discoveredDomainController.HostName
+        }
+    }
+
+    return $DomainController
+}
+
+function Test-ComputerHasExpectedSpn {
+    param(
+        [Parameter(Mandatory = $true)]
+        [psobject]$ComputerRecord,
+
+        [Parameter(Mandatory = $true)]
+        [string]$TargetName
+    )
+
+    $servicePrincipalNames = @([string]$ComputerRecord.ServicePrincipalName -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($servicePrincipalNames.Count -eq 0) {
+        return $false
+    }
+
+    $targetShortName = ($TargetName -split '\.')[0]
+    $expectedSpns = @(
+        "HOST/$TargetName",
+        "HOST/$targetShortName",
+        "HTTP/$TargetName",
+        "HTTP/$targetShortName",
+        "WSMAN/$TargetName",
+        "WSMAN/$targetShortName"
+    )
+
+    foreach ($expectedSpn in $expectedSpns) {
+        if ($servicePrincipalNames -contains $expectedSpn) {
+            return $true
+        }
+    }
+
+    return $false
 }
 
 function Assert-AllowedValues {
@@ -963,8 +1091,10 @@ function Get-RequestedComputerList {
 
     $seenInputs = @{}
     $requestedComputers = New-Object System.Collections.Generic.List[object]
+    $lineNumber = 0
 
     foreach ($line in Get-Content -LiteralPath $ListPath) {
+        $lineNumber++
         $inputName = $line.Trim()
 
         if ([string]::IsNullOrWhiteSpace($inputName) -or $inputName -match '^#') {
@@ -980,19 +1110,19 @@ function Get-RequestedComputerList {
 
         if ($inputName -match '\.') {
             if (-not (Test-IsSafeDnsName -Name $inputName)) {
-                Write-ErrorAndExit -Message "ComputerListPath contains an invalid DNS name: $inputName" -CodeKey Validation
+                Write-ErrorAndExit -Message "ComputerListPath line $lineNumber contains an invalid DNS name: $inputName" -CodeKey Validation
             }
 
             if (-not (Test-IsInDnsSuffix -Name $inputName -DnsSuffix $DefaultDomainName)) {
-                Write-ErrorAndExit -Message "ComputerListPath target '$inputName' is outside the allowed AD DNS suffix '$DefaultDomainName'." -CodeKey Validation
+                Write-ErrorAndExit -Message "ComputerListPath line $lineNumber target '$inputName' is outside the allowed AD DNS suffix '$DefaultDomainName'." -CodeKey Validation
             }
 
             $shortName = $inputName.Split('.')[0].ToUpperInvariant()
             $fqdn = $inputName
         }
         else {
-            if ($inputName -notmatch '^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$') {
-                Write-ErrorAndExit -Message "ComputerListPath contains an invalid short computer name: $inputName" -CodeKey Validation
+            if (-not (Test-IsSafeShortComputerName -Name $inputName)) {
+                Write-ErrorAndExit -Message "ComputerListPath line $lineNumber contains an invalid short computer name: $inputName" -CodeKey Validation
             }
 
             $shortName = $inputName.ToUpperInvariant()
@@ -1258,6 +1388,7 @@ function Get-ComputerRecord {
         ObjectGUID             = $Computer.objectGUID
         OperatingSystem        = $Computer.operatingSystem
         OperatingSystemVersion = $Computer.operatingSystemVersion
+        ServicePrincipalName   = (@($Computer.servicePrincipalName) | Where-Object { $_ }) -join ";"
         ConnectivityMethod     = $null
         ConnectivityStatus     = $null
         ConnectivityReachable  = $null
@@ -1921,12 +2052,13 @@ function Invoke-RemoteInventoryEnrichment {
             if ([string]::IsNullOrWhiteSpace($targetName)) { $resultProperties["RemoteInventoryStatus"] = "NoTarget" }
             elseif ([string]::IsNullOrWhiteSpace([string]$using:DomainName)) { $resultProperties["RemoteInventoryStatus"] = "SkippedUntrustedTarget: domain name unavailable" }
             elseif (-not $targetName.EndsWith(".$($using:DomainName)", [System.StringComparison]::OrdinalIgnoreCase)) { $resultProperties["RemoteInventoryStatus"] = "SkippedUntrustedTarget: target is outside the discovered AD DNS suffix" }
+            elseif (-not (Test-ComputerHasExpectedSpn -ComputerRecord $record -TargetName $targetName)) { $resultProperties["RemoteInventoryStatus"] = "SkippedUntrustedTarget: expected SPN missing" }
             elseif ($resultProperties.Contains("ConnectivityReachable") -and $resultProperties["ConnectivityReachable"] -eq $false) { $resultProperties["RemoteInventoryStatus"] = "SkippedUnreachable" }
             elseif (-not $resultProperties.Contains("ConnectivityReachable") -or $null -eq $resultProperties["ConnectivityReachable"]) { $resultProperties["RemoteInventoryStatus"] = "SkippedUnreachable: connectivity gate did not confirm reachability" }
             else {
                 $cimSession = $null
                 try {
-                    $cimSession = New-CimSession -ComputerName $targetName -Credential $using:Credential -OperationTimeoutSec $using:TimeoutSeconds -ErrorAction Stop
+                    $cimSession = New-CimSession -ComputerName $targetName -Credential $using:RemoteInventoryCredential -OperationTimeoutSec $using:TimeoutSeconds -ErrorAction Stop
                     $operatingSystem = Get-CimInstance -ClassName "Win32_OperatingSystem" -Property LastBootUpTime,SystemDrive -CimSession $cimSession -OperationTimeoutSec $using:TimeoutSeconds -ErrorAction Stop
                     $computerSystem = Get-CimInstance -ClassName "Win32_ComputerSystem" -Property Model,TotalPhysicalMemory,UserName -CimSession $cimSession -OperationTimeoutSec $using:TimeoutSeconds -ErrorAction Stop
                     $bios = Get-CimInstance -ClassName "Win32_BIOS" -Property SerialNumber -CimSession $cimSession -OperationTimeoutSec $using:TimeoutSeconds -ErrorAction Stop
@@ -2105,6 +2237,8 @@ if (-not [string]::IsNullOrWhiteSpace($ConfigPath)) {
             "DomainName",
             "CredentialSecretName",
             "CredentialPath",
+            "RemoteInventoryCredentialSecretName",
+            "RemoteInventoryCredentialPath",
             "ComputerListPath",
             "OutputDirectory",
             "SearchBase",
@@ -2167,6 +2301,8 @@ Assert-SafeTextValues -Purpose "SearchBaseList" -Values $SearchBaseList
 Assert-SafeTextValues -Purpose "ExcludeOU" -Values $ExcludeOU
 Assert-SafeTextValues -Purpose "CredentialSecretName" -Values @($CredentialSecretName) -MaximumLength 256
 Assert-SafeTextValues -Purpose "CredentialPath" -Values @($CredentialPath)
+Assert-SafeTextValues -Purpose "RemoteInventoryCredentialSecretName" -Values @($RemoteInventoryCredentialSecretName) -MaximumLength 256
+Assert-SafeTextValues -Purpose "RemoteInventoryCredentialPath" -Values @($RemoteInventoryCredentialPath)
 
 if ($SkipPing.IsPresent) {
     if ($PSBoundParameters.ContainsKey("TestMethod") -and $TestMethod -ne "None") {
@@ -2243,20 +2379,40 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 $domainDiscoveryStage = Measure-PerformanceStage -Name "DomainDiscovery"
 
 $Credential = Resolve-AdminToolsCredential -Credential $Credential -CredentialSecretName $CredentialSecretName -CredentialPath $CredentialPath -BaseDirectory $ScriptDirectory -AllowNetworkInputPath:$AllowNetworkInputPath
+$RemoteInventoryCredential = Resolve-AdminToolsCredential -Credential $RemoteInventoryCredential -CredentialSecretName $RemoteInventoryCredentialSecretName -CredentialPath $RemoteInventoryCredentialPath -BaseDirectory $ScriptDirectory -AllowNetworkInputPath:$AllowNetworkInputPath
 
 Import-TrustedActiveDirectoryModule
 
 if (-not $Credential) {
-    Write-AdminToolsLog -Message "No credential provided; prompting for credentials..." -Level Info
-    $Credential = Get-Credential -Message "Enter credentials for AD query and optional remote inventory"
+    Write-AdminToolsLog -Message "No AD query credential provided; prompting for credentials..." -Level Info
+    $Credential = Get-Credential -Message "Enter credentials for AD query"
 }
 
+if ($RemoteInventory.IsPresent -and -not $RemoteInventoryCredential) {
+    Write-AdminToolsLog -Message "No remote inventory credential provided; prompting for separate remote inventory credentials..." -Level Info
+    $RemoteInventoryCredential = Get-Credential -Message "Enter least-privilege credentials for remote inventory"
+}
+
+$DomainControllerBootstrapServer = $null
 $domainDiscoveryParameters = @{
     Credential = $Credential
 }
 
-if (-not [string]::IsNullOrWhiteSpace($DomainController)) {
-    $domainDiscoveryParameters["Server"] = $DomainController
+if (-not [string]::IsNullOrWhiteSpace($DomainName)) {
+    Assert-SafeDnsName -Name $DomainName -Purpose "DomainName"
+    $domainDiscoveryParameters["Identity"] = $DomainName
+    $domainDiscoveryParameters["Server"] = $DomainName
+
+    if (-not [string]::IsNullOrWhiteSpace($DomainController)) {
+        Assert-SafeDnsName -Name $DomainController -Purpose "DomainController"
+
+        if (-not (Test-IsInDnsSuffix -Name $DomainController -DnsSuffix $DomainName)) {
+            Write-ErrorAndExit -Message "DomainController '$DomainController' must be inside supplied DomainName '$DomainName' when used for VPN bootstrap." -CodeKey Validation
+        }
+
+        $domainDiscoveryParameters["Server"] = $DomainController
+        $DomainControllerBootstrapServer = $DomainController
+    }
 }
 
 try {
@@ -2269,9 +2425,16 @@ catch {
 if ([string]::IsNullOrWhiteSpace($DomainName)) {
     $DomainName = $adDomain.DNSRoot
 }
+elseif (-not $DomainName.Equals($adDomain.DNSRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    Write-ErrorAndExit -Message "DomainName '$DomainName' does not match discovered AD DNS root '$($adDomain.DNSRoot)'." -CodeKey Validation
+}
 
 if ([string]::IsNullOrWhiteSpace($DomainController)) {
     $DomainController = $adDomain.PDCEmulator
+}
+else {
+    $domainControllerVerificationServer = if ($DomainControllerBootstrapServer) { $DomainControllerBootstrapServer } else { $adDomain.DNSRoot }
+    $DomainController = Get-VerifiedDomainControllerName -DomainController $DomainController -Credential $Credential -DiscoveryServer $domainControllerVerificationServer
 }
 
 Assert-SafeDnsName -Name $DomainName -Purpose "DomainName"
@@ -2308,6 +2471,7 @@ $propertiesToGet = @(
     "objectGUID",
     "operatingSystem",
     "operatingSystemVersion",
+    "servicePrincipalName",
     "whenCreated"
 )
 
@@ -2677,7 +2841,6 @@ if (-not [string]::IsNullOrWhiteSpace($CompareWithPrevious)) {
 }
 
 exit 0
-
 
 
 

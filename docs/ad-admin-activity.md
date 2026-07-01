@@ -67,7 +67,8 @@ Common query controls:
 - `-DomainControllers`
 - `-Credential`
 - `-CredentialSecretName` or `-CredentialPath` for reusable credentials
-- `-MaxEventsPerDomainController`
+- `-MaxEventsPerDomainController` (defaults to 100,000 events per DC)
+- `-UnlimitedEvents` to explicitly disable the per-DC event cap
 - `-AllowPartialResults`
 - `-AllowUnverifiedDomainController`
 
