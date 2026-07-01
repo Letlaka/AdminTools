@@ -48,6 +48,9 @@ using module ./AdminToolsCommon.psm1
 .PARAMETER DisableCsvSanitization
     Export raw string values without Excel formula injection protection.
 
+.PARAMETER AuditOutcome
+    Filter exported Security audit records by outcome: Success, Failure, or Unknown.
+
 .PARAMETER Credential
     Credential used for AD discovery, privileged group lookups, and remote Security log reads.
 
@@ -88,6 +91,9 @@ param(
     [string]$CredentialPath,
 
     [switch]$AdminOnly,
+
+    [ValidateSet("Success", "Failure", "Unknown")]
+    [string[]]$AuditOutcome,
 
     [string[]]$AdminSamAccountNames,
 
@@ -135,6 +141,7 @@ $ExitCodes = @{
     Validation = 4
     ADQuery    = 5
     Export     = 7
+    PartialSuccess = 8
 }
 
 $ScriptDirectory = if ($PSScriptRoot) {
@@ -147,6 +154,7 @@ else {
 $RunStartedAt = Get-Date
 $RunTimestamp = $RunStartedAt.ToString("yyyyMMddHHmmss")
 $SecurityAuditProviderName = "Microsoft-Windows-Security-Auditing"
+$ScriptVersion = "1.0.0"
 $StartTime = $RunStartedAt.AddDays(-1 * $DaysBack)
 $EffectiveMaxEventsPerDomainController = if ($UnlimitedEvents.IsPresent) { 0 } else { $MaxEventsPerDomainController }
 
@@ -356,7 +364,8 @@ function Get-CurrentPrivilegedAdminName {
 
     return $AdminNameSet
 }
-
+
+
 function Test-IsCsvPath {
     param(
         [string]$Path
@@ -452,6 +461,7 @@ function ConvertTo-AdActivityRecord {
 
     $EventId = [int]$EventRecord.Id
     $Action = $EventActionMap[$EventId]
+    $AuditOutcomeValue = Get-AuditOutcome -EventRecord $EventRecord
 
     $ObjectDistinguishedName = Get-MapValue -Map $EventData -Key "ObjectDN"
     $MemberName = Get-MapValue -Map $EventData -Key "MemberName"
@@ -485,7 +495,8 @@ function ConvertTo-AdActivityRecord {
         TimeCreated                 = $EventRecord.TimeCreated
         DomainController            = $DomainController
         EventId                     = $EventId
-        Action                      = $Action
+        Action                      = Format-AuditAction -Action $Action -AuditOutcome $AuditOutcomeValue
+        AuditOutcome                = $AuditOutcomeValue
         ActorAccount                = $ActorAccount
         ActorSamAccountName         = $SubjectUserName
         ActorSid                    = $SubjectUserSid
@@ -556,6 +567,7 @@ if ($AdminOnly -and $EffectiveMaxEventsPerDomainController -gt 0) {
 
 $SuccessfulDomainControllers = New-Object System.Collections.Generic.List[string]
 $FailedDomainControllers = New-Object System.Collections.Generic.List[object]
+$IsPartialReport = $false
 
 $AllRecords = foreach ($DomainController in $ResolvedDomainControllers) {
     Write-Verbose "Reading Security log from $DomainController from $StartTime"
@@ -611,8 +623,14 @@ $AllRecords = foreach ($DomainController in $ResolvedDomainControllers) {
             $RawRecords
         }
 
+        $FilteredDomainControllerRecords = if (@($AuditOutcome).Count -gt 0) {
+            @($DomainControllerRecords | Where-Object { $AuditOutcome -contains $_.AuditOutcome })
+        } else {
+            $DomainControllerRecords
+        }
+
         [void]$SuccessfulDomainControllers.Add($DomainController)
-        $DomainControllerRecords
+        $FilteredDomainControllerRecords
     }
     catch {
         if ($_.Exception.Message -like "*No events were found*") {
@@ -623,6 +641,7 @@ $AllRecords = foreach ($DomainController in $ResolvedDomainControllers) {
 
         $Failure = [pscustomobject]@{
             DomainController = $DomainController
+            ErrorCategory    = Get-AuditFailureCategory -ErrorRecord $_
             Error            = $_.Exception.Message
         }
 
@@ -640,12 +659,16 @@ if ($FailedDomainControllers.Count -gt 0) {
     }
 
     Write-Warning "$PartialMessage. Exporting partial results because AllowPartialResults was specified."
+    $IsPartialReport = $true
 }
 
 $SortedRecords = $AllRecords | Sort-Object TimeCreated -Descending
 
 if ($OutputCsv) {
     $ResolvedOutputCsv = Get-ResolvedOutputPath -Path $OutputCsv
+    if ($IsPartialReport) {
+        $ResolvedOutputCsv = Get-PartialReportPath -Path $ResolvedOutputCsv
+    }
 
     if (-not (Test-IsCsvPath -Path $ResolvedOutputCsv)) {
         throw "OutputCsv must use a .csv file extension: $ResolvedOutputCsv"
@@ -682,6 +705,20 @@ if ($OutputCsv) {
         $CsvRecords | Export-Csv -LiteralPath $ResolvedOutputCsv -NoTypeInformation -Encoding UTF8
         Write-Information "Report exported to: $ResolvedOutputCsv"
         Write-RunLog -Message "Report exported to: $ResolvedOutputCsv"
+        $AuditManifest = Get-AuditCompletenessManifest `
+            -ScriptName "Get-ADAdminActivity.ps1" `
+            -ScriptVersion $ScriptVersion `
+            -QueryStartTime $StartTime `
+            -QueryEndTime $RunStartedAt `
+            -DomainControllers @($ResolvedDomainControllers) `
+            -FailedDomainControllers @($FailedDomainControllers) `
+            -MaxEventsPerDomainController $EffectiveMaxEventsPerDomainController `
+            -UnlimitedEvents:$UnlimitedEvents `
+            -OutputPaths @($ResolvedOutputCsv) `
+            -Partial:$IsPartialReport
+        $ManifestPath = Export-AuditCompletenessManifest -Manifest $AuditManifest -ReportPath $ResolvedOutputCsv
+        Write-Information "Completeness manifest exported to: $ManifestPath"
+        Write-RunLog -Message "Completeness manifest exported to: $ManifestPath"
     }
     catch {
         Write-Error "Failed to export report to '$ResolvedOutputCsv': $($_.Exception.Message)"
@@ -708,6 +745,7 @@ $SortedRecords |
         DomainController,
         EventId,
         Action,
+        AuditOutcome,
         ActorAccount,
         TargetObject,
         AttributeName,
@@ -718,7 +756,12 @@ $SortedRecords |
         EventQueryUnlimitedEvents |
     Format-Table -AutoSize
 
-Write-RunLog -Message "Completed Get-ADAdminActivity. ExitCode=$($ExitCodes.Success)"
+$FinalExitCode = if ($IsPartialReport) { $ExitCodes.PartialSuccess } else { $ExitCodes.Success }
+Write-RunLog -Message "Completed Get-ADAdminActivity. ExitCode=$FinalExitCode"
+
+if ($IsPartialReport) {
+    exit $ExitCodes.PartialSuccess
+}
 
 exit $ExitCodes.Success
 

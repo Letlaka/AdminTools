@@ -450,6 +450,204 @@ function Get-ResolvedOutputPath {
     return (Join-Path -Path (Get-Location).Path -ChildPath $Path)
 }
 
+function Get-PartialReportPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $directory = Split-Path -Path $Path -Parent
+    $fileName = Split-Path -Path $Path -Leaf
+    $extension = [System.IO.Path]::GetExtension($fileName)
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($fileName)
+
+    if (-not $baseName.EndsWith("_PARTIAL", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $baseName = "{0}_PARTIAL" -f $baseName
+    }
+
+    $partialFileName = "{0}{1}" -f $baseName, $extension
+    if ([string]::IsNullOrWhiteSpace($directory)) {
+        return $partialFileName
+    }
+
+    return Join-Path -Path $directory -ChildPath $partialFileName
+}
+
+function Get-AuditFailureCategory {
+    param(
+        [AllowNull()]
+        [object]$ErrorRecord
+    )
+
+    if ($null -ne $ErrorRecord -and $ErrorRecord.PSObject.Properties["CategoryInfo"] -and $null -ne $ErrorRecord.CategoryInfo) {
+        $category = [string]$ErrorRecord.CategoryInfo.Category
+        if (-not [string]::IsNullOrWhiteSpace($category)) {
+            return $category
+        }
+    }
+
+    $message = if ($null -eq $ErrorRecord) { "" } else { [string]$ErrorRecord }
+    if ($message -match "(?i)access is denied|unauthorized|permission") {
+        return "PermissionDenied"
+    }
+
+    if ($message -match "(?i)rpc|network|unreachable|timeout|timed out") {
+        return "ConnectionError"
+    }
+
+    if ($message -match "(?i)not found|no events were found") {
+        return "ObjectNotFound"
+    }
+
+    return "Unknown"
+}
+
+function Get-AuditCompletenessManifest {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ScriptName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ScriptVersion,
+
+        [Parameter(Mandatory = $true)]
+        [datetime]$QueryStartTime,
+
+        [Parameter(Mandatory = $true)]
+        [datetime]$QueryEndTime,
+
+        [string[]]$DomainControllers,
+
+        [object[]]$FailedDomainControllers,
+
+        [int]$MaxEventsPerDomainController,
+
+        [switch]$UnlimitedEvents,
+
+        [string[]]$OutputPaths,
+
+        [switch]$Partial
+    )
+
+    $failed = @(
+        foreach ($failure in @($FailedDomainControllers)) {
+            if ($null -eq $failure) { continue }
+            [pscustomobject]@{
+                DomainController = [string]$failure.DomainController
+                ErrorCategory    = if ($failure.PSObject.Properties["ErrorCategory"] -and -not [string]::IsNullOrWhiteSpace([string]$failure.ErrorCategory)) { [string]$failure.ErrorCategory } else { "Unknown" }
+                Error            = [string]$failure.Error
+            }
+        }
+    )
+
+    $failedSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($failure in $failed) {
+        if (-not [string]::IsNullOrWhiteSpace($failure.DomainController)) {
+            [void]$failedSet.Add($failure.DomainController)
+        }
+    }
+
+    $succeeded = @(
+        foreach ($domainController in @($DomainControllers)) {
+            if (-not [string]::IsNullOrWhiteSpace($domainController) -and -not $failedSet.Contains($domainController)) {
+                [string]$domainController
+            }
+        }
+    )
+
+    [pscustomobject]@{
+        SchemaVersion              = 1
+        GeneratedAtUtc             = (Get-Date).ToUniversalTime().ToString("o")
+        ScriptName                 = $ScriptName
+        ScriptVersion              = $ScriptVersion
+        IsPartial                  = [bool]$Partial
+        QueryWindow                = [pscustomobject]@{
+            StartTimeUtc = $QueryStartTime.ToUniversalTime().ToString("o")
+            EndTimeUtc   = $QueryEndTime.ToUniversalTime().ToString("o")
+        }
+        CapSettings                = [pscustomobject]@{
+            MaxEventsPerDomainController = $MaxEventsPerDomainController
+            UnlimitedEvents              = [bool]$UnlimitedEvents
+        }
+        DomainControllersQueried   = @($DomainControllers)
+        DomainControllersSucceeded = @($succeeded)
+        DomainControllersFailed    = @($failed)
+        OutputPaths                = @($OutputPaths)
+    }
+}
+
+function Export-AuditCompletenessManifest {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Manifest,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ReportPath
+    )
+
+    $directory = Split-Path -Path $ReportPath -Parent
+    $fileName = Split-Path -Path $ReportPath -Leaf
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($fileName)
+    $manifestFileName = "{0}.manifest.json" -f $baseName
+    $manifestPath = if ([string]::IsNullOrWhiteSpace($directory)) {
+        $manifestFileName
+    }
+    else {
+        Join-Path -Path $directory -ChildPath $manifestFileName
+    }
+
+    $Manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+    return $manifestPath
+}
+
+function Get-AuditOutcome {
+    param(
+        [AllowNull()]
+        [object]$EventRecord
+    )
+
+    if ($null -eq $EventRecord) {
+        return "Unknown"
+    }
+
+    $keywordProperty = $EventRecord.PSObject.Properties["KeywordsDisplayNames"]
+    if ($null -eq $keywordProperty) {
+        return "Unknown"
+    }
+
+    foreach ($keywordDisplayName in @($keywordProperty.Value)) {
+        $keywordText = [string]$keywordDisplayName
+        if ($keywordText -eq "Audit Success" -or $keywordText -eq "Success") {
+            return "Success"
+        }
+
+        if ($keywordText -eq "Audit Failure" -or $keywordText -eq "Failure") {
+            return "Failure"
+        }
+    }
+
+    return "Unknown"
+}
+
+function Format-AuditAction {
+    param(
+        [AllowNull()]
+        [string]$Action,
+
+        [ValidateSet("Success", "Failure", "Unknown")]
+        [string]$AuditOutcome = "Unknown"
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Action)) {
+        return $Action
+    }
+
+    if ($Action -match "\battempted\b" -and $AuditOutcome -ne "Unknown") {
+        return "{0} - outcome: {1}" -f $Action, $AuditOutcome
+    }
+
+    return $Action
+}
 function Test-IsSafeDnsName {
     param(
         [Parameter(Mandatory = $false)]

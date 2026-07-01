@@ -111,7 +111,116 @@ Describe "Get-ResolvedOutputPath" {
         Get-ResolvedOutputPath -Path $rootedPath | Should -Be $rootedPath
     }
 }
+
+Describe "Audit partial report completeness metadata" {
+    BeforeAll {
+        $ScriptRoot = Split-Path -Parent $PSScriptRoot
+        $GetAdminActivityScript = Get-Content -Raw (Join-Path $ScriptRoot "Get-ADAdminActivity.ps1")
+        $ManageUsersScript = Get-Content -Raw (Join-Path $ScriptRoot "Manage-ADUserAccounts.ps1")
+    }
+
+    It "marks partial report paths before the file extension" {
+        $partialPath = Get-PartialReportPath -Path (Join-Path $TestDrive "audit.csv")
+        Split-Path -Leaf $partialPath | Should -Be "audit_PARTIAL.csv"
+    }
+
+    It "builds a manifest with DC coverage, query window, cap settings, and script version" {
+        $start = [datetime]"2026-07-01T08:00:00Z"
+        $end = [datetime]"2026-07-01T09:00:00Z"
+        $manifest = Get-AuditCompletenessManifest `
+            -ScriptName "Get-ADAdminActivity.ps1" `
+            -ScriptVersion "1.0.0" `
+            -QueryStartTime $start `
+            -QueryEndTime $end `
+            -DomainControllers @("dc01", "dc02") `
+            -FailedDomainControllers @([pscustomobject]@{ DomainController = "dc02"; Error = "Access denied"; ErrorCategory = "PermissionDenied" }) `
+            -MaxEventsPerDomainController 100000 `
+            -UnlimitedEvents:$false `
+            -OutputPaths @("audit_PARTIAL.csv") `
+            -Partial:$true
+
+        $manifest.IsPartial | Should -BeTrue
+        $manifest.ScriptName | Should -Be "Get-ADAdminActivity.ps1"
+        $manifest.ScriptVersion | Should -Be "1.0.0"
+        $manifest.DomainControllersQueried | Should -Be @("dc01", "dc02")
+        $manifest.DomainControllersFailed[0].DomainController | Should -Be "dc02"
+        $manifest.DomainControllersFailed[0].ErrorCategory | Should -Be "PermissionDenied"
+        $manifest.QueryWindow.StartTimeUtc | Should -Be $start.ToUniversalTime().ToString("o")
+        $manifest.QueryWindow.EndTimeUtc | Should -Be $end.ToUniversalTime().ToString("o")
+        $manifest.CapSettings.MaxEventsPerDomainController | Should -Be 100000
+        $manifest.CapSettings.UnlimitedEvents | Should -BeFalse
+    }
+
+    It "exports a JSON sidecar manifest beside a report path" {
+        $reportPath = Join-Path $TestDrive "audit_PARTIAL.csv"
+        Set-Content -LiteralPath $reportPath -Value "" -Encoding UTF8
+        $manifest = Get-AuditCompletenessManifest `
+            -ScriptName "Get-ADAdminActivity.ps1" `
+            -ScriptVersion "1.0.0" `
+            -QueryStartTime ([datetime]"2026-07-01T08:00:00Z") `
+            -QueryEndTime ([datetime]"2026-07-01T09:00:00Z") `
+            -DomainControllers @("dc01") `
+            -FailedDomainControllers @() `
+            -MaxEventsPerDomainController 100000 `
+            -UnlimitedEvents:$false `
+            -OutputPaths @($reportPath) `
+            -Partial:$true
+
+        $manifestPath = Export-AuditCompletenessManifest -Manifest $manifest -ReportPath $reportPath
+        Split-Path -Leaf $manifestPath | Should -Be "audit_PARTIAL.manifest.json"
+        $json = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+        $json.ScriptName | Should -Be "Get-ADAdminActivity.ps1"
+        $json.IsPartial | Should -BeTrue
+    }
+
+    It "wires partial manifest metadata, partial filenames, and partial-success exit codes in both audit scripts" {
+        foreach ($ScriptText in @($GetAdminActivityScript, $ManageUsersScript)) {
+            $ScriptText | Should -Match 'PartialSuccess\s*=\s*8'
+            $ScriptText | Should -Match 'Get-PartialReportPath'
+            $ScriptText | Should -Match 'Get-AuditCompletenessManifest'
+            $ScriptText | Should -Match 'Export-AuditCompletenessManifest'
+            $ScriptText | Should -Match 'exit \$ExitCodes\.PartialSuccess'
+            $ScriptText | Should -Match 'ScriptVersion'
+        }
+
+        $ManageUsersScript | Should -Match '\$script:LastAuditFailedDomainControllers'
+    }
+}
+
+Describe "Security audit outcome handling" {
+    BeforeAll {
+        $ScriptRoot = Split-Path -Parent $PSScriptRoot
+        $GetAdminActivityScript = Get-Content -Raw (Join-Path $ScriptRoot "Get-ADAdminActivity.ps1")
+        $ManageUsersScript = Get-Content -Raw (Join-Path $ScriptRoot "Manage-ADUserAccounts.ps1")
+    }
+
+    It "derives AuditOutcome from event keyword display names" {
+        Get-AuditOutcome -EventRecord ([pscustomobject]@{ KeywordsDisplayNames = @("Audit Success") }) | Should -Be "Success"
+        Get-AuditOutcome -EventRecord ([pscustomobject]@{ KeywordsDisplayNames = @("Audit Failure") }) | Should -Be "Failure"
+        Get-AuditOutcome -EventRecord ([pscustomobject]@{ KeywordsDisplayNames = @("Classic") }) | Should -Be "Unknown"
+    }
+
+    It "labels attempted audit actions with the resolved outcome" {
+        Format-AuditAction -Action "Password reset attempted" -AuditOutcome "Failure" |
+            Should -Be "Password reset attempted - outcome: Failure"
+        Format-AuditAction -Action "User account created" -AuditOutcome "Success" |
+            Should -Be "User account created"
+    }
+
+    It "adds AuditOutcome export and filter support to admin and user audit reports" {
+        foreach ($ScriptText in @($GetAdminActivityScript, $ManageUsersScript)) {
+            $ScriptText | Should -Match '\[ValidateSet\("Success", "Failure", "Unknown"\)\]'
+            $ScriptText | Should -Match '\[string\[\]\]\$AuditOutcome'
+            $ScriptText | Should -Match 'AuditOutcome\s*=\s*\$AuditOutcomeValue'
+            $ScriptText | Should -Match 'Action\s*=\s*Format-AuditAction -Action .+ -AuditOutcome \$AuditOutcomeValue'
+            $ScriptText | Should -Match '\$AuditOutcome -contains \$_\.AuditOutcome'
+        }
+
+        $GetAdminActivityScript | Should -Match 'AuditOutcome,'
+    }
+}
 Describe "Get-WithRetry (via Scan-ADComputers)" {
+
     # Integration tests for retry behavior require mocking.
     # Placeholder: verify the function exists in the module after refactor.
     It "Get-WithRetry is available" {
@@ -239,6 +348,13 @@ Describe "Scan-ADComputers performance pipeline" {
         $ScanComputersScript | Should -Match '\$DnsThrottleLimitEffective'
         $ScanComputersScript | Should -Match '\$PortThrottleLimitEffective'
         $ScanComputersScript | Should -Match '\$RemoteInventoryThrottleLimitEffective'
+    }
+
+    It "allows empty targeted result sets through enrichment and summary generation" {
+        $ScanComputersScript | Should -Match 'function Invoke-OperationalEnrichment[\s\S]*?\[AllowEmptyCollection\(\)\]\s*\[object\[\]\]\$Records'
+        $ScanComputersScript | Should -Match 'function Get-SummaryRecords[\s\S]*?\[AllowEmptyCollection\(\)\]\s*\[object\[\]\]\$Records'
+        $ScanComputersScript | Should -Match 'if \(@\(\$Records\)\.Count -eq 0\) \{ return @\(\) \}'
+        $ScanComputersScript | Should -Match '\$resultList = @\(Invoke-OperationalEnrichment -Records @\(\$resultList\) -PerformConnectivityCheck \$performConnectivityEnrichment\)'
     }
 }
 

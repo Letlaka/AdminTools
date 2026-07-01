@@ -63,6 +63,9 @@ using module ./AdminToolsCommon.psm1
 .PARAMETER CredentialPath
     Path to a PSCredential exported with Export-Clixml. Credential files must be outside the repository directory.
 
+.PARAMETER AuditOutcome
+    Filter exported Security audit records by outcome: Success, Failure, or Unknown.
+
 .PARAMETER MaxEventsPerDomainController
     Maximum Security events read from each Domain Controller. Defaults to 100000.
 
@@ -106,6 +109,9 @@ param(
     [string[]]$ExcludeOU,
 
     [string[]]$DomainControllers,
+
+    [ValidateSet("Success", "Failure", "Unknown")]
+    [string[]]$AuditOutcome,
 
     [PSCredential]$Credential,
 
@@ -194,6 +200,7 @@ $ExitCodes = @{
     Validation = 4
     ADQuery    = 5
     Export     = 7
+    PartialSuccess = 8
 }
 
 $ScriptDirectory = if ($PSScriptRoot) {
@@ -206,8 +213,12 @@ else {
 $RunStartedAt = Get-Date
 $RunTimestamp = $RunStartedAt.ToString("yyyyMMddHHmmss")
 $SecurityAuditProviderName = "Microsoft-Windows-Security-Auditing"
+$ScriptVersion = "1.0.0"
 $StartTime = $RunStartedAt.AddDays(-1 * $DaysBack)
 $EffectiveMaxEventsPerDomainController = if ($UnlimitedEvents.IsPresent) { 0 } else { $MaxEventsPerDomainController }
+$script:LastAuditQueriedDomainControllers = @()
+$script:LastAuditFailedDomainControllers = @()
+$script:LastAuditWasPartial = $false
 
 $UserEventIds = @(
     4720, # User created
@@ -309,6 +320,7 @@ function ConvertTo-UserAuditRecord {
 
     $EventData = ConvertTo-EventDataMap -EventRecord $EventRecord
     $EventId = [int]$EventRecord.Id
+    $AuditOutcomeValue = Get-AuditOutcome -EventRecord $EventRecord
     $TargetUserName = Get-MapValue -Map $EventData -Key "TargetUserName"
     $TargetDomainName = Get-MapValue -Map $EventData -Key "TargetDomainName"
     $SubjectUserName = Get-MapValue -Map $EventData -Key "SubjectUserName"
@@ -330,7 +342,8 @@ function ConvertTo-UserAuditRecord {
         TimeCreated        = $EventRecord.TimeCreated
         DomainController   = $DomainController
         EventId            = $EventId
-        Action             = $UserEventActionMap[$EventId]
+        Action             = Format-AuditAction -Action $UserEventActionMap[$EventId] -AuditOutcome $AuditOutcomeValue
+        AuditOutcome       = $AuditOutcomeValue
         TargetUser         = $TargetUserName
         TargetDomain       = $TargetDomainName
         TargetAccount      = Join-DomainAccount -DomainName $TargetDomainName -AccountName $TargetUserName
@@ -397,6 +410,9 @@ function Get-UserAuditEvents {
 
     $SuccessfulDomainControllers = New-Object System.Collections.Generic.List[string]
     $FailedDomainControllers = New-Object System.Collections.Generic.List[object]
+    $script:LastAuditQueriedDomainControllers = @($ResolvedDomainControllers)
+    $script:LastAuditFailedDomainControllers = @()
+    $script:LastAuditWasPartial = $false
 
     $AllRecords = foreach ($DomainController in $ResolvedDomainControllers) {
         Write-Verbose "Reading Security log from $DomainController from $StartTime"
@@ -429,8 +445,14 @@ function Get-UserAuditEvents {
                 Write-RunLog -Message $LimitMessage -Level "Warning"
             }
 
+            $FilteredSecurityRecords = if (@($AuditOutcome).Count -gt 0) {
+                @($SecurityEventQuery.Records | Where-Object { $AuditOutcome -contains $_.AuditOutcome })
+            } else {
+                @($SecurityEventQuery.Records)
+            }
+
             [void]$SuccessfulDomainControllers.Add($DomainController)
-            $SecurityEventQuery.Records | ForEach-Object {
+            $FilteredSecurityRecords | ForEach-Object {
                 if (Test-UserMatchesAuditRecord -Record $_ -User $User) {
                     $_
                 }
@@ -445,6 +467,7 @@ function Get-UserAuditEvents {
 
             $Failure = [pscustomobject]@{
                 DomainController = $DomainController
+                ErrorCategory    = Get-AuditFailureCategory -ErrorRecord $_
                 Error            = $_.Exception.Message
             }
 
@@ -462,9 +485,11 @@ function Get-UserAuditEvents {
         }
 
         Write-Warning "$PartialMessage. Exporting partial results because AllowPartialResults was specified."
+        $script:LastAuditWasPartial = $true
     }
 
     # Event audit records include EventQueryMaxEventsPerDomainController, EventQueryLimitReached, EventQueryEventsReadFromDomainController, and EventQueryUnlimitedEvents metadata.
+    $script:LastAuditFailedDomainControllers = @($FailedDomainControllers)
     return @($AllRecords | Sort-Object TimeCreated -Descending)
 }
 
@@ -557,6 +582,9 @@ function Export-AccountReport {
 
     foreach ($Format in $Formats) {
         $TargetPath = "{0}.{1}" -f $BasePath, $Format.ToLowerInvariant()
+        if ($script:LastAuditWasPartial) {
+            $TargetPath = Get-PartialReportPath -Path $TargetPath
+        }
 
         if ((Test-IsUncPath -Path $TargetPath) -and -not $AllowNetworkOutputPath) {
             throw "Network output paths are not allowed by default: $TargetPath. Re-run with -AllowNetworkOutputPath only if the location is trusted."
@@ -644,6 +672,22 @@ tr:nth-child(even) { background: #f9fafb; }
 
         [void]$ExportedPaths.Add($TargetPath)
         Write-Information "Exported $ReportName report: $TargetPath"
+        if (@($script:LastAuditQueriedDomainControllers).Count -gt 0 -and ($ReportName -match "Audit|LockedOutEvents" -or $script:LastAuditWasPartial)) {
+            $AuditManifest = Get-AuditCompletenessManifest `
+                -ScriptName "Manage-ADUserAccounts.ps1" `
+                -ScriptVersion $ScriptVersion `
+                -QueryStartTime $StartTime `
+                -QueryEndTime $RunStartedAt `
+                -DomainControllers @($script:LastAuditQueriedDomainControllers) `
+                -FailedDomainControllers @($script:LastAuditFailedDomainControllers) `
+                -MaxEventsPerDomainController $EffectiveMaxEventsPerDomainController `
+                -UnlimitedEvents:$UnlimitedEvents `
+                -OutputPaths @($TargetPath) `
+                -Partial:$script:LastAuditWasPartial
+            $ManifestPath = Export-AuditCompletenessManifest -Manifest $AuditManifest -ReportPath $TargetPath
+            Write-Information "Completeness manifest exported to: $ManifestPath"
+            Write-RunLog -Message "Completeness manifest exported to: $ManifestPath"
+        }
     }
 
     return @($ExportedPaths.ToArray())
@@ -1358,7 +1402,12 @@ if ($ExportedPaths.Count -gt 0) {
     }
 }
 
-Write-RunLog -Message "Completed Manage-ADUserAccounts. ExitCode=$($ExitCodes.Success)"
+$FinalExitCode = if ($script:LastAuditWasPartial) { $ExitCodes.PartialSuccess } else { $ExitCodes.Success }
+Write-RunLog -Message "Completed Manage-ADUserAccounts. ExitCode=$FinalExitCode"
+
+if ($script:LastAuditWasPartial) {
+    exit $ExitCodes.PartialSuccess
+}
 
 exit $ExitCodes.Success
 

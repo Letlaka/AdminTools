@@ -1688,6 +1688,7 @@ function Get-DeltaRecords {
 function Get-SummaryRecords {
     param(
         [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
         [object[]]$Records
     )
 
@@ -1852,7 +1853,7 @@ function Get-ConnectivityLookup {
 
 function Invoke-ConnectivityEnrichment {
     param(
-        [Parameter(Mandatory = $true)] [object[]]$Records,
+        [Parameter(Mandatory = $true)] [AllowEmptyCollection()] [object[]]$Records,
         [Parameter(Mandatory = $true)] [bool]$PerformConnectivityCheck,
         [Parameter(Mandatory = $true)] [ValidateSet("Ping", "WinRM", "None")] [string]$Method,
         [Parameter(Mandatory = $true)] [int]$ThrottleLimitValue
@@ -1930,7 +1931,7 @@ function Invoke-ConnectivityEnrichment {
 }
 
 function Invoke-DnsEnrichment {
-    param([Parameter(Mandatory = $true)] [object[]]$Records, [Parameter(Mandatory = $true)] [int]$ThrottleLimitValue)
+    param([Parameter(Mandatory = $true)] [AllowEmptyCollection()] [object[]]$Records, [Parameter(Mandatory = $true)] [int]$ThrottleLimitValue)
     if (-not $ResolveDns.IsPresent -or @($Records).Count -eq 0) { return @($Records) }
     $indexedRecords = for ($index = 0; $index -lt $Records.Count; $index++) { [PSCustomObject]@{ Index = $index; Record = $Records[$index] } }
     $completedRecords = 0
@@ -1964,7 +1965,7 @@ function Invoke-DnsEnrichment {
 }
 
 function Invoke-PortEnrichment {
-    param([Parameter(Mandatory = $true)] [object[]]$Records, [Parameter(Mandatory = $true)] [int]$ThrottleLimitValue)
+    param([Parameter(Mandatory = $true)] [AllowEmptyCollection()] [object[]]$Records, [Parameter(Mandatory = $true)] [int]$ThrottleLimitValue)
     if (@($TestPorts).Count -eq 0 -or @($Records).Count -eq 0) { return @($Records) }
     $indexedRecords = for ($index = 0; $index -lt $Records.Count; $index++) { [PSCustomObject]@{ Index = $index; Record = $Records[$index] } }
     $completedRecords = 0
@@ -1987,7 +1988,7 @@ function Invoke-PortEnrichment {
 }
 
 function Invoke-RemoteInventoryEnrichment {
-    param([Parameter(Mandatory = $true)] [object[]]$Records, [Parameter(Mandatory = $true)] [int]$ThrottleLimitValue)
+    param([Parameter(Mandatory = $true)] [AllowEmptyCollection()] [object[]]$Records, [Parameter(Mandatory = $true)] [int]$ThrottleLimitValue)
     if (-not $RemoteInventory.IsPresent -or @($Records).Count -eq 0) { return @($Records) }
     Write-AdminToolsLog -Message "Remote inventory requires connectivity gating; unreachable targets are skipped before CIM queries." -Level Info
     $indexedRecords = for ($index = 0; $index -lt $Records.Count; $index++) { [PSCustomObject]@{ Index = $index; Record = $Records[$index] } }
@@ -2087,7 +2088,7 @@ function Invoke-RemoteInventoryEnrichment {
 
 function Invoke-OperationalEnrichment {
     param(
-        [Parameter(Mandatory = $true)] [object[]]$Records,
+        [Parameter(Mandatory = $true)] [AllowEmptyCollection()] [object[]]$Records,
         [Parameter(Mandatory = $true)] [bool]$PerformConnectivityCheck
     )
 
@@ -2764,7 +2765,7 @@ if ($Mode -eq "Full" -and $TestMethod -ne "None") {
 }
 
 try {
-    $resultList = Invoke-OperationalEnrichment -Records $resultList -PerformConnectivityCheck $performConnectivityEnrichment
+    $resultList = @(Invoke-OperationalEnrichment -Records @($resultList) -PerformConnectivityCheck $performConnectivityEnrichment)
 }
 catch {
     Write-ErrorAndExit -Message "Operational enrichment failed: $($_.Exception.Message)" -CodeKey Operational
